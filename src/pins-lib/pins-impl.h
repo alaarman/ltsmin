@@ -22,6 +22,9 @@
 #if defined(OPAAL)
 #include <pins-lib/opaal-pins.h>
 #endif
+#if defined(JAVA)
+#include <java-pins.h>
+#endif
 
 #if defined(MCRL)
 #define SPEC_POPT_OPTIONS { NULL, 0, POPT_ARG_INCLUDE_TABLE, mcrl_options, 0, "mCRL options", NULL }
@@ -55,6 +58,11 @@
 #endif
 #if defined(OPAAL)
 #define SPEC_POPT_OPTIONS { NULL, 0, POPT_ARG_INCLUDE_TABLE, opaal_options, 0, "Opaal options", NULL }
+#define SPEC_MT_SAFE 1
+#define SPEC_REL_PERF 10
+#endif
+#if defined(JAVA)
+#define SPEC_POPT_OPTIONS { NULL, 0, POPT_ARG_INCLUDE_TABLE, java_options, 0, "Java options", NULL }
 #define SPEC_MT_SAFE 1
 #define SPEC_REL_PERF 10
 #endif
