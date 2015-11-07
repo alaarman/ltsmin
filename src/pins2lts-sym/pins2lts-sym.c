@@ -3697,7 +3697,6 @@ static const int LENGTH[4] = { 0, 1, 1, 3 };
 
 static size_t           scc_count = 0;
 static int             *v;
-static dfs_stack_t      stack;
 static dfs_stack_t      T;
 static int report_shift = 2;
 
@@ -3710,20 +3709,6 @@ report_scc_progress ()
         return true;
     }
     return false;
-}
-
-static inline vset_t *
-queue (vset_t *P)
-{
-    void *data = dfs_stack_push (stack, (int *)P);
-    return (vset_t *) data;
-}
-
-static inline vset_t *
-dequeue ()
-{
-    int **ptr = (int **)dfs_stack_pop (stack);
-    return (vset_t *) ptr;
 }
 
 static inline vset_t
@@ -3814,10 +3799,8 @@ reach_in (bool backward, vset_t B, vset_t universe)
 }
 
 void
-scc_fb ()
+scc_fb (vset_t P)
 {
-    vset_t          P = *dequeue ();
-
     trim (P);
 
     if (vset_is_empty(P)) { vset_destroy (P); return; }
@@ -3841,18 +3824,17 @@ scc_fb ()
     vset_minus (B, SCC);                        // B := B \ SCC
     vset_destroy (SCC);
 
-    queue (&P);                                 // FB (P)
-    queue (&F);                                 // FB (F)
-    queue (&B);                                 // FB (B)
+    scc_fb (P);                                 // FB (P)
+    scc_fb (F);                                 // FB (F)
+    scc_fb (B);                                 // FB (B)
 }
 
-static inline void converge (bool backward, vset_t N, vset_t Nfront, vset_t C, vset_t P);
+static inline void converge (bool backward, vset_t N, vset_t Nfront, vset_t C,
+                             vset_t P)  __attribute__((always_inline));
 
 void
-scc_lock_step ()
+scc_lock_step (vset_t P)
 {
-    vset_t          P = *dequeue ();
-
     trim (P);
 
     if (vset_is_empty(P)) { vset_destroy (P); return; }
@@ -3919,8 +3901,8 @@ converge (bool backward, vset_t N, vset_t Nfront, vset_t C, vset_t P)
     vset_minus (C, SCC);                        // C := C \ SCC
     vset_destroy (SCC);
 
-    queue (&C);                                 // LockStep (C)
-    queue (&P);                                 // LockStep (P)
+    scc_lock_step (C);                          // LockStep (C)
+    scc_lock_step (P);                          // LockStep (P)
 }
 
 //  Construct Forward Skeleton <F, Sn, Nn>
@@ -3964,14 +3946,8 @@ skeleton (bool backward, vset_t V, vset_t N, vset_t F, vset_t Sn, vset_t Nn, vse
 }
 
 void
-sscc ()
+sscc (vset_t V, vset_t S, vset_t N)
 {
-    vset_t         *A = dequeue ();
-    // previous Forward Skeleton <V, S, N>
-    vset_t          V = A[0];
-    vset_t          S = A[1];
-    vset_t          N = A[2];
-
     // trim (V); // TODO
 
     if (vset_is_empty(V)) {                     // V = {}
@@ -4015,14 +3991,8 @@ sscc ()
     vset_minus (Sn, SCC);
     vset_destroy (SCC);
 
-    A = queue (NULL);                                  // SSCC (C)
-    A[0] = V;
-    A[1] = S;
-    A[2] = N;
-    A = queue (NULL);                                  // SSCC (P)
-    A[0] = F;
-    A[1] = Sn;
-    A[2] = Nn;
+    sscc (V, S, N);                             // SSCC (C)
+    sscc (F, Sn, Nn);                           // SSCC (P)
 }
 
 void
@@ -4085,51 +4055,42 @@ scc_detect (vset_t  P)
     rt_timer_t t = RTcreateTimer();
     RTstartTimer(t);
     v = RTmalloc (sizeof(int[N]));
-    stack = dfs_stack_create (INT_SIZE(sizeof(vset_t[LENGTH[sccs]])));
 
     // test_forward_back (P);
 
-    // Initialization
-    vset_t         *A = queue (NULL);
+    vset_t          V, N, S;
     switch (sccs) {
-    case 1: A[0] = copy (P); break;
-    case 2: A[0] = copy (P); break;
+    case 1:
+        V = copy (P);
+        scc_fb (V);
+        break;
+    case 2:
+        V = copy (P);
+        scc_lock_step (V);
+        break;
     case 3:
         T = dfs_stack_create (INT_SIZE(sizeof(vset_t)));
-        A[0] = copy  (P);
-        A[1] = empty ();
-        A[2] = empty ();
+        V = copy  (P);
+        S = empty ();
+        N = empty ();
+        sscc (V, S, N);
         break;
     case 4:
         T = dfs_stack_create (INT_SIZE(sizeof(vset_t)));
-        vset_t          V = empty ();                // V := {}
-        vset_t          S = empty ();                // S := {}
-        vset_t          N = empty ();                // N := {}
+        V = empty ();
+        S = empty ();
+        N = empty ();
         vset_t          E = empty ();                // N := {}
         skeleton (false, P, initial, V, S, N, E);
         HREassert (vset_equal(V, P), "Divergent reachability in initial skeleton construction for SCC detection");
         vset_destroy (E);
-        A[0] = V;
-        A[1] = S;
-        A[2] = N;
+        RTprintTimer(infoShort, t, "SCC initialization took");
+        Warning (info, " ");
+        RTresetTimer (t);
+        RTstartTimer(t);
+        sscc (V, S, N);
         break;
     default: Abort ("Unimplemented SCC detection function %d", sccs);
-    }
-    RTstopTimer(t);
-    Warning (info, " ");
-    RTprintTimer(infoShort, t, "SCC initialization took");
-
-    // SCC detection
-    RTresetTimer (t);
-    RTstartTimer(t);
-    while (dfs_stack_size(stack) != 0) {
-        switch (sccs) {
-        case 1: scc_fb ();          break;
-        case 2: scc_lock_step ();   break;
-        case 3: sscc ();            break;
-        case 4: sscc ();            break;
-        default: Abort ("Unimplemented SCC detection function %d", sccs);
-        }
     }
     RTstopTimer(t);
 
