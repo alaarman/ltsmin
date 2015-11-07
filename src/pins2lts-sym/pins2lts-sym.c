@@ -4096,6 +4096,12 @@ scc_detect (vset_t  P)
     case 2: A[0] = copy (P); break;
     case 3:
         T = dfs_stack_create (INT_SIZE(sizeof(vset_t)));
+        A[0] = copy  (P);
+        A[1] = empty ();
+        A[2] = empty ();
+        break;
+    case 4:
+        T = dfs_stack_create (INT_SIZE(sizeof(vset_t)));
         vset_t          V = empty ();                // V := {}
         vset_t          S = empty ();                // S := {}
         vset_t          N = empty ();                // N := {}
@@ -4103,10 +4109,9 @@ scc_detect (vset_t  P)
         skeleton (false, P, initial, V, S, N, E);
         HREassert (vset_equal(V, P), "Divergent reachability in initial skeleton construction for SCC detection");
         vset_destroy (E);
-
-        A[0] = V; // copy  (P);
-        A[1] = S; // empty ();
-        A[2] = N; // empty ();
+        A[0] = V;
+        A[1] = S;
+        A[2] = N;
         break;
     default: Abort ("Unimplemented SCC detection function %d", sccs);
     }
@@ -4122,6 +4127,7 @@ scc_detect (vset_t  P)
         case 1: scc_fb ();          break;
         case 2: scc_lock_step ();   break;
         case 3: sscc ();            break;
+        case 4: sscc ();            break;
         default: Abort ("Unimplemented SCC detection function %d", sccs);
         }
     }
