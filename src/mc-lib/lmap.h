@@ -15,6 +15,7 @@
 
 #include <dm/dm.h>
 #include <mc-lib/trace.h>
+#include <util-lib/fast_hash.h>
 
 /**
 \typedef

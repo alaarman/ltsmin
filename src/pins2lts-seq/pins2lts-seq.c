@@ -549,7 +549,7 @@ bfs_vset_open_insert_condition(gsea_state_t *state, void *arg)
  * DFS (GSEA run configurations)
  */
 
-static void *
+/*static*/ void *
 get_stack_state (ref_t ref, void *arg)
 {
     gsea_state_t state;
@@ -570,9 +570,9 @@ dfs_goal_trace (gsea_state_t *state, void *arg)
     ref_t          *trace = RTmalloc (sizeof(ref_t) * level);
     for (int i = level - 1; i >= 0; i--)
         trace[level - i - 1] = *dfs_stack_peek_top (gc.queue.filo.stack, i);
-    trc_env_t          *trace_env = trc_create (opt.model, get_stack_state, NULL);
+    //trc_env_t          *trace_env = trc_create (opt.model, get_stack_state, NULL);
     Warning (info, "Writing trace to %s", opt.trc_output);
-    trc_write_trace (trace_env, (char *)opt.trc_output, trace, level);
+    //trc_write_trace (trace_env, (char *)opt.trc_output, trace, level);
     RTfree (trace);
     (void)state;
     (void)arg;

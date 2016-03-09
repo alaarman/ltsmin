@@ -6,6 +6,9 @@
 #include <mc-lib/trace.h>
 #include <util-lib/MurmurHash3.h>
 
+typedef size_t              ref_t;
+static const ref_t          DUMMY_IDX = SIZE_MAX;
+
 typedef uint32_t hash32_t;
 typedef uint64_t hash64_t;
 

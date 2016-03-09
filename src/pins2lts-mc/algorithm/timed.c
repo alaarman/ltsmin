@@ -4,10 +4,12 @@
 
 #include <hre/config.h>
 
+#include <math.h>
 #include <popt.h>
 
 #include <pins2lts-mc/algorithm/timed.h>
 #include <pins2lts-mc/algorithm/reach.h>
+#include <mc-lib/hashtable.h>
 #include <pins2lts-mc/parallel/stream-serializer.h>
 
 // TODO: merge with reach algorithms
@@ -15,6 +17,8 @@
 int              LATTICE_BLOCK_SIZE = (1UL<<CACHE_LINE) / sizeof(lattice_t);
 int              UPDATE = TA_UPDATE_WAITING;
 int              NONBLOCKING = 0;
+
+static const size_t    FACTOR = 10; // 10 times as much symbolic as explicit states
 
 struct poptOption timed_options[] = {
     {"lattice-blocks", 'l', POPT_ARG_INT | POPT_ARGFLAG_SHOW_DEFAULT | POPT_ARGFLAG_DOC_HIDDEN, &LATTICE_BLOCK_SIZE, 0,
@@ -28,10 +32,19 @@ struct poptOption timed_options[] = {
     POPT_TABLEEND
 };
 
+typedef struct state_s {
+    ref_t               ref;
+    lattice_t           lattice;
+} tstate_t;
+
 typedef struct ta_alg_global_s {
-    alg_global_t         reach;
+    alg_global_t        reach;
 
     lm_loc_t            lloc;       // lattice location (serialized by state-info)
+
+    tstate_t           *slap;
+    size_t              slap_index;
+    size_t              slap_size;
 } ta_alg_global_t;
 
 typedef struct ta_alg_local_s {
@@ -55,6 +68,7 @@ typedef struct ta_reduced_s {
 typedef struct ta_alg_shared_s {
     alg_shared_t        reach;
     lm_t               *lmap;
+    hashtable_t        *parent;
 } ta_alg_shared_t;
 
 typedef enum ta_set_e {
@@ -123,12 +137,109 @@ ta_covered_nb (void *arg, lattice_t l, lm_status_t status, lm_loc_t lm)
     return LM_CB_NEXT;
 }
 
+
+static int
+timed_cmp_wrapper (const void *l1, const void *l2)
+{
+    if (l1 == l2) return 0;
+    return memcmp(l1, l2, sizeof(tstate_t));
+}
+
+static uint32_t
+timed_hash_wrapper (const void *si, void *ctx)
+{
+    tstate_t           *tstate = (tstate_t *) si;
+
+    return (tstate->ref + tstate->lattice) ^ (tstate->lattice >> 11);
+    (void)ctx;
+}
+
+static void // called when cas failed!
+timed_free_wrapper (const void *si, void *ctx)
+{
+    ta_alg_global_t    *sm = (ta_alg_global_t *) ctx;
+    tstate_t           *nstate = &sm->slap[sm->slap_index - 1];
+    HREassert (timed_cmp_wrapper(si, nstate) == 0, "Unexpected");
+
+    sm->slap_index--; // delete
+}
+
+static void *
+timed_clone_wrapper (const void *si, void *ctx)
+{
+    tstate_t           *tstate = (tstate_t *) si;
+    ta_alg_global_t    *sm = (ta_alg_global_t *) ctx;
+
+    HREassert (sm->slap_index < sm->slap_size);
+
+    size_t index = sm->slap_index;
+    sm->slap[index].ref = tstate->ref;
+    sm->slap[index].lattice = tstate->lattice;
+    tstate_t           *nstate = &sm->slap[sm->slap_index];
+    sm->slap_index++;
+    return nstate;
+}
+
+static const datatype_t DATATYPE_TIMED = {
+    (cmp_fun_t)     timed_cmp_wrapper,
+    (hash_fun_t)    timed_hash_wrapper,
+    (clone_fun_t)   timed_clone_wrapper,
+    (free_fun_t)    timed_free_wrapper,
+};
+
+void *
+get_state_timed (void *state, void *arg)
+{
+    wctx_t             *ctx = (wctx_t *) arg;
+    tstate_t           *s = (tstate_t *) state;
+    state_info_set (ctx->state, s->ref, s->lattice);
+    return state_info_pins_state (ctx->state);
+}
+
+void *
+get_parent_timed (void *state, void *arg)
+{
+    wctx_t             *ctx = (wctx_t *) arg;
+    alg_global_t       *sm = ctx->global;
+    ta_alg_shared_t    *shared = (ta_alg_shared_t *) ctx->run->shared;
+    tstate_t           *s = (tstate_t *) state;
+    tstate_t           *nstate = NULL;
+    map_val_t val = ht_cas_empty (shared->parent,
+                                  (map_key_t)s, // key
+                                  (map_val_t)0x7777777,
+                                  (map_key_t*)&nstate, // will be overwritten
+                                  sm);
+    return (void *)val;
+}
+
+static const size_t INIT_SCALE = 20;
 static void
 ta_queue_state_normal (wctx_t *ctx, state_info_t *successor)
 {
     alg_global_t       *sm = ctx->global;
+    ta_alg_shared_t    *shared = (ta_alg_shared_t *) ctx->run->shared;
+
     raw_data_t stack_loc = dfs_stack_push (sm->stack, NULL);
     state_info_serialize (successor, stack_loc);
+
+    if (EXPECT_FALSE(trc_output != NULL)) {
+        tstate_t            ststate = { .ref = ctx->state->ref,
+                                        .lattice = ctx->state->lattice };
+        // allocate parent
+        tstate_t           *src = timed_clone_wrapper (&ststate, sm);
+
+        tstate_t            tstate = { .ref = successor->ref,
+                                       .lattice = successor->lattice };
+        tstate_t           *nstate = NULL;
+        ht_cas_empty (shared->parent,
+                      (map_key_t)&tstate, // key
+                      (map_val_t)src,
+                      (map_key_t*)&nstate, // will be overwritten
+                      sm);
+        if (nstate == NULL) { // install failed, deallocate parent
+            timed_free_wrapper (src, sm);
+        }
+    }
 }
 
 static void (*ta_queue_state)(wctx_t *, state_info_t *) = ta_queue_state_normal;
@@ -357,6 +468,12 @@ timed_global_init   (run_t *run, wctx_t *ctx)
     state_info_add_simple (si_perm, sizeof(lm_loc_t), &sm->lloc);
 
     reach_global_setup (run, ctx);
+
+    if (trc_output) {
+        sm->slap_size = dbs_size + log2(FACTOR / HREpeers(HREglobal()));
+        sm->slap = RTmallocZero (sizeof(tstate_t[sm->slap_size]));
+        sm->slap_index = 0;
+    }
 }
 
 void
@@ -469,6 +586,7 @@ timed_run (run_t *run, wctx_t *ctx)
     }
 }
 
+
 void
 timed_shared_init      (run_t *run)
 {
@@ -481,7 +599,14 @@ timed_shared_init      (run_t *run)
     set_alg_reduce (run->alg, timed_reduce);
 
     run->shared = RTmallocZero (sizeof (ta_alg_shared_t));
-    reach_init_shared (run);
+    reach_init_shared (run, NULL);
     ta_alg_shared_t    *shared = (ta_alg_shared_t *) run->shared;
     shared->lmap = state_store_lmap (global->store);
+
+    if (trc_output) {
+        // allocate table for back pointers
+        shared->parent = ht_alloc (&DATATYPE_TIMED, INIT_SCALE);
+        get_state = get_state_timed;
+        get_parent = get_parent_timed;
+    }
 }

@@ -23,7 +23,18 @@ typedef struct trace_ctx_s {
 } trace_ctx_t;
 
 static void *
-get_stack_state (ref_t ref, void *arg)
+get_stack_ltl (void *ref, void *arg)
+{
+    trace_ctx_t        *ctx = (trace_ctx_t *) arg;
+    trace_info_t       *state = (trace_info_t     *) SIget(ctx->si, ref);
+    state_info_set (ctx->state, state->val.ref, state->val.lattice);
+    state_data_t        data  = state_info_pins_state (ctx->state);
+    Debug ("Trace %zu (%zu,%zu)", ref, state->val.ref, state->val.lattice);
+    return data;
+}
+
+static void *
+get_parent_ltl (void *ref, void *arg)
 {
     trace_ctx_t        *ctx = (trace_ctx_t *) arg;
     trace_info_t       *state = (trace_info_t     *) SIget(ctx->si, ref);
@@ -46,7 +57,7 @@ find_and_write_dfs_stack_trace (model_t model, dfs_stack_t stack)
     size_t              level = dfs_stack_nframes (stack) + 1;
     trace_ctx_t         ctx;
     ctx.state = state_info_create ();
-    ref_t              *trace = RTmalloc (sizeof(ref_t) * level);
+    void              **trace = RTmalloc (sizeof(void *) * level);
     trace_info_t        state;
     ctx.si = SIcreate();
     for (int i = level - 1; i >= 0; i--) {
@@ -55,9 +66,9 @@ find_and_write_dfs_stack_trace (model_t model, dfs_stack_t stack)
         new_state (&state, ctx.state);
         Warning (infoLong, "%zu\t(%zu),", ctx.state->ref, level - i);
         int val = SIputC (ctx.si, state.data, sizeof(struct val_s));
-        trace[level - i - 1] = (ref_t) val;
+        trace[level - i - 1] = (void *) val;
     }
-    trc_env_t          *trace_env = trc_create (model, get_stack_state, &ctx);
+    trc_env_t  *trace_env = trc_create (model, get_stack_ltl, get_parent_ltl, &ctx);
     Warning (info, "Writing trace to %s", trc_output);
     trc_write_trace (trace_env, trc_output, trace, level);
     SIdestroy (&ctx.si);

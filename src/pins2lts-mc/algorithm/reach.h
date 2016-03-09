@@ -37,6 +37,8 @@ extern char            *act_detect;
 extern char            *inv_detect;
 extern int              dlk_detect;
 extern size_t           max_level;
+extern trc_get_state_f  get_state;
+extern trc_get_parent_f get_parent;
 
 typedef struct counter_s {
     size_t              level_size;     // size of the SBFS level
@@ -103,7 +105,7 @@ extern void reach_reduce  (run_t *run, wctx_t *ctx);
 
 extern void reach_print_stats  (run_t *run, wctx_t *ctx);
 
-extern void reach_init_shared (run_t *run);
+extern void reach_init_shared (run_t *run, char *trc_output);
 
 extern void handle_error_trace (wctx_t *ctx);
 

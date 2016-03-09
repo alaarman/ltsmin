@@ -29,12 +29,26 @@ struct poptOption reach_options[] = {
     POPT_TABLEEND
 };
 
+
+trc_get_state_f get_state;
+trc_get_parent_f get_parent;
+
 void *
-get_state (ref_t state_no, void *arg)
+get_state_reach (void *state, void *arg)
 {
     wctx_t             *ctx = (wctx_t *) arg;
+    ref_t               state_no = (ref_t) state;
     state_info_set (ctx->state, state_no, LM_NULL_LATTICE);
     return state_info_pins_state (ctx->state);
+}
+
+void *
+get_parent_reach (void *state, void *arg)
+{
+    wctx_t             *ctx = (wctx_t *) arg;
+    alg_shared_t       *shared = ctx->run->shared;
+    ref_t               ref = (ref_t) state;
+    return shared->parent_ref[ref];
 }
 
 void
@@ -51,15 +65,10 @@ handle_error_trace (wctx_t *ctx)
 
         double uw = cct_finalize (global->tables, "BOGUS, you should not see this string.");
         Warning (infoLong, "Parallel chunk tables under-water mark: %.2f", uw);
-        if (strategy[0] & Strat_TA) {
-            dfs_stack_leave (sm->stack);
-            find_and_write_dfs_stack_trace (ctx->model, sm->stack);
-        } else {
-            trc_env_t  *trace_env = trc_create (ctx->model, get_state, ctx);
-            Warning (info, "Writing trace to %s", trc_output);
-            trc_find_and_write (trace_env, trc_output, ctx->state->ref, level,
-                                shared->parent_ref, ctx->initial->ref);
-        }
+        trc_env_t  *trace_env = trc_create (ctx->model, get_state, get_parent, ctx);
+        Warning (info, "Writing trace to %s", trc_output);
+        trc_find_and_write (trace_env, trc_output, ctx->state->ref, level,
+                            ctx->initial->ref, shared->parent_ref);
     }
     global->exit_status = LTSMIN_EXIT_COUNTER_EXAMPLE;
 }
@@ -655,7 +664,7 @@ reach_is_stopped (run_t *run)
 }
 
 void
-reach_init_shared (run_t *run)
+reach_init_shared (run_t *run, char *trc_output)
 {
     if (run->shared == NULL)
         run->shared = RTmallocZero (sizeof (alg_shared_t));
@@ -665,6 +674,8 @@ reach_init_shared (run_t *run)
 
     if (trc_output) {
         run->shared->parent_ref = RTmallocZero (sizeof(ref_t[1UL<<dbs_size]));
+        get_state = get_state_reach;
+        get_parent = get_parent_reach;
     }
 }
 
@@ -679,5 +690,5 @@ reach_shared_init   (run_t *run)
     set_alg_run (run->alg, reach_run);
     set_alg_reduce (run->alg, reach_reduce);
 
-    reach_init_shared (run);
+    reach_init_shared (run, trc_output);
 }

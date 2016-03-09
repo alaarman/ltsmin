@@ -336,6 +336,6 @@ dfs_fifo_shared_init   (run_t *run)
     set_alg_run (run->alg, dfs_fifo_run);
     set_alg_reduce (run->alg, dfs_fifo_reduce);
 
-    reach_init_shared (run);
+    reach_init_shared (run, trc_output);
 }
 
