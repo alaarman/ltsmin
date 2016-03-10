@@ -3730,7 +3730,7 @@ static int report_shift = 2;
 static inline bool
 report_scc_progress (size_t scc_count)
 {
-    int shift = ATOMIC_READ(report_shift);
+    int shift = atomic_read (&report_shift);
     if ((scc_count >> shift) != 0) {
         if (cas (&report_shift, shift, shift + 1)) {
             Warning(info, "SCC iteration: %zu", (size_t)1ULL << shift);
@@ -3798,10 +3798,9 @@ trim (vset_t P, size_t *scc_count)
         if (vset_equal(P, Ptemp)) break;
         trimmed = true;
         vset_minus (P, Ptemp);
-        bn_int_t c;
+        double c;
         vset_count (P, NULL, &c);
-        *scc_count += bn_int2double (&c);
-        bn_clear (&c);
+        *scc_count += c;
         while (report_scc_progress(*scc_count)) {}
         //vset_union (Pruned, P);
         vset_copy (P, Ptemp);
@@ -3937,14 +3936,10 @@ TASK_1 (size_t, scc_lock_step, vset_t, P)
         C = converge (true,  B, Bfront, F, P);
     }
 
-//    bn_int_t c;
-//    bn_init(&c);
+//    double c, cc;
 //    vset_count (P, NULL, &c);
-//    double p = bn_int2double(&c);
-//    vset_count (C, NULL, &c);
-//    double cc = bn_int2double(&c);
-//    Warning (info, "%d -- %d", (int)cc, (int)p);
-//    bn_clear(&c);
+//    vset_count (C, NULL, &cc);
+//    Warning (info, "%d -- %d", (int)c, (int)cc);
 
     size_t spawns = 0;
     if (!vset_is_empty(C)) {
@@ -4079,10 +4074,9 @@ test_forward_back (vset_t  P)
     // test forward reach from initial result
     vset_t          P2 = copy  (P);
     vset_minus (P2, F);
-    bn_int_t c;
-    vset_count (P2, NULL, &c);
-    size_t count = bn_int2double (&c);
-    HREassert (count == 0, "Divergent forward reachability in initial skeleton construction for SCC detection (off by %zu)", count);
+    double count;
+    vset_count (P2, NULL, &count);
+    HREassert (count == 0, "Divergent forward reachability in initial skeleton construction for SCC detection (off by %f)", count);
     HREassert (vset_equal(P, F), "Divergent forward reachability");
     vset_destroy (P2);
 
@@ -4103,8 +4097,7 @@ test_forward_back (vset_t  P)
 
     // test backward reachablity
     vset_minus (F, B);
-    vset_count (F, NULL, &c);
-    count = bn_int2double (&c);
+    vset_count (F, NULL, &count);
     HREassert (count == 0, "Divergent backward reachability in initial skeleton construction for SCC detection (off by %zu)", count);
     HREassert (vset_equal(P, B), "Divergent forward reachability");
     vset_destroy (F);
