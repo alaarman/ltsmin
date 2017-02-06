@@ -140,6 +140,22 @@ AX_TRY_CXXFLAGS_IFELSE([-pipe])
 
 AX_CC_COMPILE_CXX_LINK
 
+AC_ARG_WITH([sylvan],[AS_HELP_STRING([--with-sylvan],[Compile with Sylvan support])],[],[
+    PKG_CHECK_MODULES([SYLVAN], [sylvan >= 1.1],[
+        with_sylvan=yes
+        SYLVAN_CPPFLAGS="$SYLVAN_CFLAGS"
+        AC_SUBST(SYLVAN_CFLAGS)
+        AC_SUBST(SYLVAN_CPPFLAGS)
+        AC_SUBST(SYLVAN_LDFLAGS)
+        AC_SUBST(SYLVAN_LIBS)],
+        with_sylvan=no)
+])
+
+if test "x$with_sylvan" == xyes; then
+    # AC_CONFIG_SUBDIRS([scoop])
+    [have_sylvan="yes"]
+fi
+
 ACX_MCRL([:],
   [AC_MSG_WARN([no acceptable muCRL installation found.])])
 ACX_MCRL2([:],
@@ -412,19 +428,9 @@ AC_ARG_ENABLE([werror],
     [enable_werror=no])
 AS_IF([test x"$enable_werror" = "xyes"], [AC_SUBST([AM_CFLAGS], [-Werror])])
 
-PKG_CHECK_MODULES([SYLVAN], [sylvan >= 1.1],[
-    have_sylvan=yes
-    SYLVAN_CPPFLAGS="$SYLVAN_CFLAGS"
-    AC_SUBST(SYLVAN_CFLAGS)
-    AC_SUBST(SYLVAN_CPPFLAGS)
-    AC_SUBST(SYLVAN_LDFLAGS)
-    AC_SUBST(SYLVAN_LIBS)],
-    [AC_MSG_FAILURE(Sylvan is not installed.)])
-
 #AM_CONDITIONAL([HAVE_POSIX], [test x"$POSIX_SHARED" = "xyes"])
 AM_CONDITIONAL([HAVE_SCOOP], [test x"$have_scoop" = "xyes"])
 AM_CONDITIONAL([HAVE_SYLVAN], [test x"$have_sylvan" = "xyes"])
-AS_IF([test x"$have_sylvan" = "xyes"], [AC_DEFINE([HAVE_SYLVAN], [1], [Define if using sylvan.])])
 AM_CONDITIONAL([HAVE_OPAAL], [test x"$have_opaal" = "xyes"])
 AM_CONDITIONAL([HAVE_OPAAL_COMPILER], [test x"$OPAAL_LTSMIN" != x])
 AM_CONDITIONAL([HAVE_MPI], [test x"$have_mpi" != "x"])
@@ -583,6 +589,7 @@ Configuration:
 ======================================================================
     ASCIIDOC = ${ASCIIDOC:-NOT FOUND, not building documentation}
     BIGNUM   = ${with_bignum}
+    BOOST    = ${have_boost:-NOT FOUND, not including advanced variable reordering algorithms}
     CADP     = ${CADP:-NOT FOUND, building without CADP support}
     CC       = ${CC:-NOT FOUND}
     CXX      = ${CXX:-NOT FOUND}
@@ -593,13 +600,13 @@ Configuration:
     MPICXX   = ${MPICXX:-NOT FOUND, building without MPI support}
     OPAAL    = ${have_opaal:-TBB malloc NOT FOUND, building without opaal support}
     PBES     = ${acx_pbes:-NOT FOUND, building without PBES support}
+    PNML     = ${have_xml2:-NO, not building pnml (Petri net) front-end}
+    PROB     = ${acx_prob:-NO, either ProB was disabled or CZMQ could not be found}
     SCOOP    = ${have_scoop:-NO, either scoop was disabled or ghc/happy/ghc-pkg/hashmap/deepseq could not be found}
     SPINS    = ${acx_spins:-NO, JDK or Ant not found (override with --with-spins)}
     SPOT     = ${acx_spot:-NO, Spot not found (override with --with-spot)}
-    XMLTO    = ${XMLTO:-NOT FOUND, not building manpages}
-    BOOST    = ${have_boost:-NOT FOUND, not including advanced variable reordering algorithms}
+    SYLVAN   = ${have_sylvan:-NO, not building with Sylvan s concurrent decision diagrams}
     VIENNACL = ${have_viennacl:-NO, not including advanced variable reordering algorithms}
-    PNML     = ${have_xml2:-NO, not building pnml (Petri net) front-end}
-    PROB     = ${acx_prob:-NO, either ProB was disabled or CZMQ could not be found}
+    XMLTO    = ${XMLTO:-NOT FOUND, not building manpages}
 ======================================================================
 EOM
