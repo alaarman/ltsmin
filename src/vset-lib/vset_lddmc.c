@@ -24,9 +24,12 @@ struct vector_set {
     vdom_t dom;
 
     MDD mdd;          // LDD of the set
-    int size;         // size of state vectors in this set
     int k;            // projection size or -1 if not projecting
-    int *proj;        // which variables are in the set
+    int *proj;        // if projecting, the variables in the set
+
+    // The following variables are computed based on k and proj
+
+    int size;         // size of state vectors in this set
     MDD meta;         // "meta" for set_project (vs full vector)
 };
 
@@ -37,14 +40,18 @@ struct vector_relation {
     void *expand_ctx; // callback parameter
 
     MDD mdd;          // LDD of the relation
-    int size;         // depth of the LDD
-    MDD meta;         // "meta" for set_next, set_prev
 
     int r_k, w_k;     // number of read/write in this relation
     int *r_proj;
     int *w_proj;
 
-    // The following three variables are for the Saturation implementation
+    // The following variables are computed based on the above variables
+
+    int size;         // depth of the LDD
+    MDD meta;         // "meta" for set_next, set_prev
+
+    // The following variables are for the Saturation implementation
+
     int topvar;       // top variable depth (vs full vector)
     MDD topmeta;      // "meta" for set_next, set_prev (at <topvar>)
     MDD topread;      // "meta" for getting short read vectors (at <topvar>)
@@ -58,7 +65,7 @@ set_create(vdom_t dom, int k, int *proj)
 {
     LACE_ME;
 
-    assert(k <= dom->shared.size);
+    assert(k == -1 || (k >= 0 && k <= dom->shared.size));
     vset_t set = (vset_t)RTmalloc(sizeof(struct vector_set));
 
     set->dom  = dom;
@@ -67,22 +74,26 @@ set_create(vdom_t dom, int k, int *proj)
     set->proj = k == -1 ? NULL : (int*)RTmalloc(sizeof(int[k]));
     if (k != -1) memcpy(set->proj, proj, sizeof(int[k]));
 
-    int meta[dom->shared.size+1];
-    if (k < 0) {
+    // compute size
+    set->size = k == -1 ? dom->shared.size : k;
+
+    // compute meta
+    uint32_t meta[dom->shared.size+1];
+    if (k == -1) {
         // set meta to [-1] (= keep rest)
-        meta[0] = -1;
-        set->meta = lddmc_cube((uint32_t*)meta, 1);
+        meta[0] = (uint32_t)-1;
+        set->meta = lddmc_cube(meta, 1);
     } else if (k == 0) {
-        meta[0] = -2;
-        set->meta = lddmc_cube((uint32_t*)meta, 1);
+        // set meta to [-2] (= quantify rest)
+        meta[0] = (uint32_t)-2;
+        set->meta = lddmc_cube(meta, 1);
     } else {
-        // fill meta with 0 (= quantify)
-        memset(meta, 0, sizeof(int[dom->shared.size+1]));
         // set meta to 1 (= keep) for every variable in proj
+        memset(meta, 0, sizeof(int[dom->shared.size+1]));
         for (int i=0; i<k; i++) meta[proj[i]] = 1;
         // end sequence with -2 (= quantify rest)
-        meta[proj[k-1]+1] = -2;
-        set->meta = lddmc_cube((uint32_t*)meta, proj[k-1]+2);
+        meta[proj[k-1]+1] = (uint32_t)-2;
+        set->meta = lddmc_cube(meta, proj[k-1]+2);
     }
 
     lddmc_protect(&set->mdd);
@@ -105,12 +116,12 @@ set_destroy(vset_t set)
 
 /**
  * Add an element to the set.
+ * If the set is a projected vector, then <e> is a projected state.
  */
 static void
 set_add(vset_t set, const int* e)
 {
     LACE_ME;
-    assert(set->k == -1); // unclear whether set_add receives a full vector or a short vector
     set->mdd = lddmc_union_cube(set->mdd, (uint32_t*)e, set->size);
 }
 
@@ -185,6 +196,7 @@ set_ccount(vset_t set, long *nodes, long double *elements)
 
 /**
  * Add all elements of <src> to <dst>.
+ * (Thread-safe version for if multiple threads add to dst)
  */
 static void
 set_union(vset_t dst, vset_t src)
@@ -247,24 +259,27 @@ static void
 set_copy_match(vset_t dst, vset_t src, int p_len, int *proj, int *match)
 {
     LACE_ME;
-    assert(src->k == -1 && dst->k == -1); // currently only supports full vectors
+
+    assert(dst->meta == src->meta); // for now, require same meta
 
     if (p_len == 0) {
         dst->mdd = src->mdd;
     } else {
-        vdom_t dom = src->dom;
-        int _proj[dom->shared.size+1];
-        // fill _proj with 0 (= not in match)
-        memset(_proj, 0, sizeof(int[dom->shared.size+1]));
-        // set _proj to 1 (= match) for every variable in proj
-        for (int i=0; i<p_len; i++) _proj[proj[i]] = 1;
-        // end sequence with -1 (= rest not in match)
-        _proj[proj[p_len-1]+1] = -1;
-        MDD mdd_proj = lddmc_refs_push(lddmc_cube((uint32_t*)_proj, proj[p_len-1]+2));
-
+        const int vector_size = src->dom->shared.size;
+        uint32_t meta[vector_size+1];
+        int j=0; // current index in src proj
+        int k=0; // current index in match proj
+        for (int i=0; i<vector_size; i++) {
+            if (k == p_len) break; // end of match
+            if (src->k == -1 || src->proj[j] == i) {
+                if (proj[k] == i) meta[j++] = 1;
+                else meta[j++] = 0;
+            }
+        }
+        meta[j++] = -1; // = rest not in match
+        MDD meta_mdd = lddmc_refs_push(lddmc_cube(meta, j));
         MDD cube = lddmc_refs_push(lddmc_cube((uint32_t*)match, p_len));
-
-        dst->mdd = lddmc_match(src->mdd, cube, mdd_proj);
+        dst->mdd = lddmc_match(src->mdd, cube, meta_mdd);
         lddmc_refs_pop(2);
     }
 }
@@ -320,41 +335,46 @@ set_update(vset_t dst, vset_t set, vset_update_cb cb, void* context)
 {
     LACE_ME;
     struct set_update_context ctx = (struct set_update_context){dst, cb, context};
-    MDD result = lddmc_refs_push(lddmc_collect(set->mdd, (lddmc_collect_cb)TASK(set_updater), &ctx));
+    MDD result = lddmc_collect(set->mdd, (lddmc_collect_cb)TASK(set_updater), &ctx);
+    lddmc_refs_push(result);
     dst->mdd = lddmc_union(dst->mdd, result);
     lddmc_refs_pop(1);
 }
 
 /**
- * Enumerate all (full) states matching a certain (short) state
+ * Enumerate all states matching a certain (short) state
  */
 static void
 set_enum_match(vset_t set, int p_len, int *proj, int *match, vset_element_cb cb, void *context)
 {
+    assert(p_len >= 0); // sanity check
+
+    // compute the match projection relative to the set projection
+    const int vector_size = set->dom->shared.size;
+    uint32_t meta[vector_size+1];
+    int j=0; // current index in set proj
+    int k=0; // current index in match proj
+    for (int i=0; i<vector_size; i++) {
+        if (k == p_len) break; // end of match
+        if (set->k == -1 || set->proj[j] == i) {
+            if (proj[k] == i) meta[j++] = 1;
+            else meta[j++] = 0;
+        }
+    }
+    meta[j++] = -1; // = rest not in match
+
     LACE_ME;
-    // only works for full vectors
-    assert(set->k == -1);
-    // create projection
-    vdom_t dom = set->dom;
-    int _meta[dom->shared.size+1];
-    // fill _meta with 0 (= not in match)
-    memset(_meta, 0, sizeof(int[dom->shared.size+1]));
-    // set _meta to 1 (= match) for every variable in proj
-    for (int i=0; i<p_len; i++) _meta[proj[i]] = 1;
-    // end sequence with -1 (= rest not in match)
-    const int len = p_len == 0 ? 1 : proj[p_len-1]+2;
-    _meta[len-1] = -1;
-    // convert array to dd
-    MDD mdd_meta = lddmc_refs_push(lddmc_cube((uint32_t*)_meta, len));
-    // convert match to dd
+    MDD meta_mdd = lddmc_refs_push(lddmc_cube(meta, j));
+
     MDD cube = lddmc_refs_push(lddmc_cube((uint32_t*)match, p_len));
     struct enum_context ctx = (struct enum_context){.cb=cb, .context=context};
-    lddmc_match_sat_par(set->mdd, cube, mdd_meta, (lddmc_enum_cb)TASK(enumer), &ctx);
+    lddmc_match_sat_par(set->mdd, cube, meta_mdd, (lddmc_enum_cb)TASK(enumer), &ctx);
     lddmc_refs_pop(2);
 }
 
 /**
- * Project full vector <src> into short vector <dst> 
+ * Project vector <src> into vector <dst> 
+ * The projection of src must be >= the projection of dst.
  */
 static void
 set_project(vset_t dst, vset_t src)
@@ -368,7 +388,8 @@ set_project(vset_t dst, vset_t src)
         // compute a custom meta
         assert(src->k >= dst->k);
         uint32_t meta[src->dom->shared.size+1];
-        int i=0, j=0;
+        int i=0; // index of src->proj
+        int j=0; // index of dst->proj
         while (i<src->k && j<dst->k) {
             if (src->proj[i] < dst->proj[j]) {
                 meta[i++] = 0;
@@ -379,9 +400,10 @@ set_project(vset_t dst, vset_t src)
                 assert(src->proj[i] <= dst->proj[j]);
             }
         }
-        meta[i++] = -2;
+        meta[i++] = -2; // = quantify rest
         LACE_ME;
-        MDD mdd_meta = lddmc_refs_push(lddmc_cube(meta, i));
+        MDD mdd_meta = lddmc_cube(meta, i);
+        lddmc_refs_push(mdd_meta);
         dst->mdd = lddmc_project(src->mdd, mdd_meta);
         lddmc_refs_pop(1);
     }
@@ -415,9 +437,10 @@ set_project_minus(vset_t dst, vset_t src, vset_t minus)
                 assert(src->proj[i] <= dst->proj[j]);
             }
         }
-        meta[i++] = -2;
+        meta[i++] = -2; // = quantify rest
         LACE_ME;
-        MDD mdd_meta = lddmc_refs_push(lddmc_cube(meta, i));
+        MDD mdd_meta = lddmc_cube(meta, i);
+        lddmc_refs_push(mdd_meta);
         dst->mdd = lddmc_project_minus(src->mdd, mdd_meta, minus->mdd);
         lddmc_refs_pop(1);
     }
