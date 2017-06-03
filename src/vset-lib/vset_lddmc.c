@@ -374,7 +374,11 @@ set_enum_match(vset_t set, int p_len, int *proj, int *match, vset_element_cb cb,
 }
 
 /**
+<<<<<<< HEAD
  * Project vector <src> into vector <dst>
+=======
+ * Project vector <src> into vector <dst> 
+>>>>>>>  work in progress
  * The projection of src must be >= the projection of dst.
  */
 static void
