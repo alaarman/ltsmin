@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <time.h>
+#ifdef __APPLE__
+#include <alloca.h>
+#endif
 
 #include <dm/dm.h>
 #include <hre/stringindex.h>
@@ -12,6 +15,7 @@
 #include <ltsmin-lib/ltsmin-standard.h>
 #include <pins-lib/pins.h>
 #include <pins-lib/pins-util.h>
+#include <pins-lib/por/por-ample.h>
 #include <pins-lib/por/por-beam.h>
 #include <pins-lib/por/por-internal.h>
 #include <util-lib/bitmultiset.h>
@@ -68,11 +72,19 @@ typedef struct search_context {
     int             score_vis_en;   // selected number of visible and enabled transitions
     key_type_t      has_key;        // key transitions type
     int             score_en;       // score of enabled trans (used as comparison in case transitions are excluded)
+    char           *ps;             // processes included in this search (process is added as soon as one of its enabled transitions is)
+
 } search_context_t;
 
 struct beam_s {
     int              beam_used;     // number of search contexts in use
     search_context_t**search;       // search contexts
+
+    size_t          nprocs;
+    process_t      *procs;
+    int            *g2p;
+    int            *g2pc;
+    int            *pad;
 };
 
 static inline bool
@@ -168,6 +180,8 @@ update_ns_scores (por_context *ctx, search_context_t *s, int group)
 static inline bool
 select_group (por_context *ctx, search_context_t *s, int group)
 {
+    beam_t             *beam = (beam_t *) ctx->alg;
+
     if (s->emit_status[group] & (ES_QUEUED | ES_VISITED)) { // already selected
         Debugf ("(%d), ", group);
         return false;
@@ -175,6 +189,13 @@ select_group (por_context *ctx, search_context_t *s, int group)
     s->emit_status[group] |= ES_QUEUED;
 
     update_ns_scores (ctx, s, group);
+
+    if (beam->procs && s->ps[ beam->g2p[group] ] > 0 &&
+                                   ctx->label_status[beam->g2pc[group]] == 0) {
+        s->emit_status[group] |= ES_VISITED;
+        return false;
+    }
+
 
     // and add to work array and update counts
     int visible = is_visible (ctx, group);
@@ -187,10 +208,33 @@ select_group (por_context *ctx, search_context_t *s, int group)
         s->score_en += is_excluded(ctx, group) ? ctx->enabled_list->count :
                        (bms_has(ctx->include, 0, group) ? 0 : 1);
         s->enabled->data[s->enabled->count++] = group;
+        if (beam->procs) s->ps[beam->g2p[group]]++;
     }
     s->score_visible += visible;
     Debugf ("%d, ", group);
     return true;
+}
+
+static inline bool
+select_group2 (por_context *ctx, search_context_t *s, int group)
+{
+    beam_t             *beam = (beam_t *) ctx->alg;
+
+    bool new = false;
+    new |= select_group2 (ctx, s, group);
+
+    if (beam->procs && ctx->group_status[group] == GS_ENABLED) {
+        // select all enabled transitions of the same process
+        // and count this process as one (in score_en)
+        int p = beam->g2p[group];
+        int score = s->score_en;
+        for (int *e = ci_begin(ctx->enabled_list); e != ci_end(ctx->enabled_list); e++) {
+            if (*e == group || beam->g2p[*e] != p) continue;
+            new |= select_group2 (ctx, s, *e);
+        }
+        s->score_en = score;
+    }
+    return new;
 }
 
 static inline int
@@ -403,13 +447,36 @@ beam_search (por_context *ctx)
         }
 
         if (!s->initialized) { // init search (expensive)
+            Debugf ("BEAM-%d Initializing scores for group %d: ", s->idx, s->group);
             memset(s->emit_status, 0, sizeof(char[ctx->ngroups]));
             if (!NO_HEUR) {
                 memcpy(s->nes_score, ctx->nes_score, sizeof(int[NS_SIZE(ctx)]));
             }
-            select_group (ctx, s, s->group);
+//            if (beam->procs) {
+//                // select all disabled transitions of the process for free
+//                // also include all its enabled transitions, as they will be anyway
+//                process_t *p = &beam->procs[beam->g2p[s->group]];
+//                for (int *g = ci_begin(p->groups); g != ci_end(p->groups); g++) {
+//                    if (ctx->label_status[beam->g2pc[*g]] == 0) {
+//                        int old = s->work_disabled->count;
+//                        Debugf ("[");
+//                        select_group2 (ctx, s, *g);
+//                        Debugf ("]");
+//                        s->work_disabled->count = old; // skip it in search
+//                        s->emit_status[*g] |= ES_VISITED;
+//                    } else {
+//                        select_group2 (ctx, s, *g); // if PC is enabled, we need to process it
+//                    }
+//                }
+            if (beam->procs) {
+                memset (s->ps, 0 , beam->nprocs);
+                select_group (ctx, s, s->group);
+            } else {
+                select_group (ctx, s, s->group);
+            }
+            s->score_en = 0;
             s->initialized = 1;
-            Debugf ("BEAM-%d Initializing scores for group %d\n", s->idx, s->group);
+            Debugf ("\n");
         }
 
         // while there are no enabled, but some disabled transitions:
@@ -664,10 +731,12 @@ beam_emit (por_context* ctx, int* src, TransitionCB cb, void* uctx)
 static void
 beam_setup (model_t model, por_context *ctx, int *src)
 {
+    beam_t         *beam = ctx->alg;
+
     por_init_transitions (model, ctx, src);
     por_transition_costs (ctx);
 
-    beam_t         *beam = ctx->alg;
+    memset (beam->pad, 0, sizeof(int[beam->nprocs]));
     int             c = RANDOM ? clock() : 0;
     int             beams = ctx->enabled_list->count;
     if (MAX_BEAM != -1 && beams > MAX_BEAM)
@@ -678,7 +747,9 @@ beam_setup (model_t model, por_context *ctx, int *src)
         int idx = i;
         if (RANDOM) idx = (idx + c) % beams;
         int group = ctx->enabled_list->data[idx];
-        if (is_excluded(ctx, group)) continue;
+        int prev_procs = 0;
+        if (beam->procs) prev_procs = beam->pad[beam->g2p[group]]++;
+        if (is_excluded(ctx, group) || prev_procs > 0) continue;
 
         search_context_t *search = beam->search[beam->beam_used];
         search->has_key = KEY_NONE;
@@ -715,12 +786,12 @@ create_search_context (por_context *ctx)
 {
     search_context_t *search;
     search = RTmallocZero(sizeof(search_context_t));
-    search->emit_status = RTmallocZero(sizeof(char[ctx->ngroups]));
-    search->work_enabled = ci_create(ctx->ngroups);
-    search->work_disabled = ci_create(ctx->ngroups);
-    search->enabled = ci_create(ctx->ngroups);
-    search->emitted = ci_create(ctx->ngroups);
-    search->nes_score = RTmallocZero(sizeof(int[NS_SIZE(ctx)]));
+    search->emit_status = RTmallocZero (sizeof(char[ctx->ngroups]));
+    search->work_enabled = ci_create (ctx->ngroups);
+    search->work_disabled = ci_create (ctx->ngroups);
+    search->enabled = ci_create (ctx->ngroups);
+    search->emitted = ci_create (ctx->ngroups);
+    search->nes_score = RTmallocZero (sizeof(int[NS_SIZE(ctx)]));
     return search;
 }
 
@@ -738,9 +809,17 @@ beam_create_context (por_context *ctx)
     }
 
     beam_t         *beam = RTmallocZero(sizeof(beam_t));
+
+    beam->g2p = RTmallocZero (sizeof(int[ctx->ngroups]));
+    beam->g2pc = RTmallocZero (sizeof(int[ctx->ngroups]));
+    beam->pad = RTmallocZero (sizeof(int[ctx->ngroups]));
+    beam->procs = identify_procs (ctx, &beam->nprocs, beam->g2p, beam->g2pc);
+    if (beam->procs == NULL) beam->nprocs = 0;
+
     beam->search = RTmallocZero(sizeof(search_context_t *[ctx->ngroups]));
     for (int i = 0 ; i < ctx->ngroups; i++) {
         beam->search[i] = create_search_context (ctx);
+        beam->search[i]->ps = RTmalloc (sizeof(char[beam->nprocs]));
     }
     return beam;
 }

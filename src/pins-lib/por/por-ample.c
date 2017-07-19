@@ -40,6 +40,7 @@ struct ample_s {
     matrix_t            gnce;
     ci_list           **gmayen;
     int                *g2p;
+    int                *g2pc;
     ci_list           **fdep; // Future dependencies
             /**
              * If process p has an enabled transition e in s, then it might be
@@ -328,7 +329,10 @@ ample_create_context (por_context *por, bool all)
 
     // find processes:
     a->g2p = RTmallocZero (sizeof(int[por->ngroups]));
-    a->procs = identify_procs (por, &a->num_procs, a->g2p);
+    a->g2pc = RTmallocZero (sizeof(int[por->ngroups]));
+    a->procs = identify_procs (por, &a->num_procs, a->g2p, a->g2pc);
+    if (a->procs == NULL)
+        Abort ("Undefined PC identification criteria for current frontend");
     //find_procs (ample); // TODO: use dependency matrices for this?
 
     HREassert (!all || a->num_procs <= 255, "Only up to 255 processes are supported in the ample set.");
@@ -362,7 +366,7 @@ pins_slot_with_type_name_is_pc (model_t model, int i, char **res)
 
     const char *mod = HREappName();
     if (strncmp(mod, "prom2", 5) == 0) {
-        if (!has_suffix(name, "._pc")) return false;
+        if (!has_suffix(name, "._pc")) return 0;
 
         lts_type_t          ltstype = GBgetLTStype(model);
         char *n = lts_type_get_state_name (ltstype, i);
@@ -372,16 +376,17 @@ pins_slot_with_type_name_is_pc (model_t model, int i, char **res)
         dot[0] = '\0';
         *res = strdup (n);
         dot[0] = '.';//#elif defined(OPAAL)
-        return true;
+        return 1;
     } else if (strncmp(mod, "dve2", 4) == 0) {
         if (strcmp(name, type) == 0) {
             *res = name;
-            return true;
+            return 1;
         }
     } else {
-        Abort("Undefined PC identification criteria for current frontend");
+        return -1;
+        //Abort("Undefined PC identification criteria for current frontend");
     }
-    return false;
+    return 0;
 }
 
 static char *
@@ -420,13 +425,16 @@ pins_group_is_in_proc_with_name (model_t model, int group, char *name, int pc)
 }
 
 process_t *
-identify_procs (por_context *por, size_t *num_procs, int *group2proc)
+identify_procs (por_context *por, size_t *num_procs, int *group2proc,
+                int *group2pc)
 {
     *num_procs = 0;
     model_t             model = por->parent;
     process_t          *procs = RTmalloc (sizeof(process_t[por->ngroups]));
     for (int i = 0; i < por->nslots; i++) {
-        if (pins_slot_with_type_name_is_pc (model, i, &procs[*num_procs].name)) {
+        int isPC = pins_slot_with_type_name_is_pc (model, i, &procs[*num_procs].name);
+        if (isPC == -1) return NULL;
+        if (isPC) {
             procs[*num_procs].pc_slot = i;
             //procs[*num_procs].name;
             procs[*num_procs].id = *num_procs;
@@ -460,6 +468,22 @@ identify_procs (por_context *por, size_t *num_procs, int *group2proc)
         }
         HREassert (found, "Group %d not assigned to an ample-set process", g);
     }
+
+
+    matrix_t        *p_sl = GBgetStateLabelInfo(model);
+    for (int g = 0; g < por->ngroups; g++) {
+        group2pc[g] = -1;
+        int slot = procs[group2proc[g]].pc_slot;
+        ci_list *l = (ci_list *) GBgetGuard (model, g);
+        for (int *u = ci_begin(l); u != ci_end(l); u++) {
+            if (dm_is_set (p_sl, *u, slot) && dm_ones_in_row (p_sl, *u) == 1) {
+                group2pc[g] = *u;
+                break;
+            }
+        }
+        HREassert (group2pc[g] != -1, "No PC guard candidate found for group %d, slot %d!", g, slot);
+    }
+
 
     Printf1 (infoLong, "Process --> Groups:\n");
     for (process_t *p = &procs[0]; p != &procs[*num_procs]; p++) {

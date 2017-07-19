@@ -34,6 +34,6 @@ extern int          ample_search_one (model_t self, int *src, TransitionCB cb,
                                       void *user_context);
 
 extern process_t   *identify_procs (por_context *por, size_t *num_procs,
-                                    int *group2proc);
+                                    int *group2proc, int *group2pc);
 
 #endif

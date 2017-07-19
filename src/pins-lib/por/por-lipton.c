@@ -53,6 +53,7 @@ struct lipton_ctx_s {
     int                 lipton_group;
     process_t          *procs;
     int                *g2p;
+    int                *g2pc;
     size_t              num_procs;
     del_ctx_t          *del;        // deletion context
     ci_list           **g_next;     // group --> group [proc internal] (enabling, inv. of NES)
@@ -395,7 +396,10 @@ lipton_create (por_context *por, model_t pormodel)
 
     // find processes:
     lipton->g2p = RTmallocZero (sizeof(int[por->ngroups]));
-    lipton->procs = identify_procs (por, &lipton->num_procs, lipton->g2p);
+    lipton->g2pc = RTmallocZero (sizeof(int[por->ngroups]));
+    lipton->procs = identify_procs (por, &lipton->num_procs, lipton->g2p, lipton->g2pc);
+    if (lipton->procs == NULL)
+        Abort ("Undefined PC identification criteria for current frontend");
     lipton->queue[0] = dfs_stack_create (por->nslots + INT_SIZE(sizeof(stack_data_t)));
     lipton->queue[1] = dfs_stack_create (por->nslots + INT_SIZE(sizeof(stack_data_t)));
     lipton->commit   = dfs_stack_create (por->nslots + INT_SIZE(sizeof(stack_data_t)));
