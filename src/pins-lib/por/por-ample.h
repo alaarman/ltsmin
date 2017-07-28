@@ -15,6 +15,7 @@ typedef struct __attribute__((packed)) process_s {
     ci_list            *groups;
 
     ci_list            *en;
+    ci_list            *en_pc;
     ci_list            *succs;
     size_t              conflicts;
     size_t              depth;

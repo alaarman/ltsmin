@@ -58,7 +58,7 @@ struct lipton_ctx_s {
     del_ctx_t          *del;        // deletion context
     ci_list           **g_next;     // group --> group [proc internal] (enabling, inv. of NES)
     ci_list           **p_dis;      // group --> process [proc remote] (disabled, NDS)
-    ci_list           **nla[2];   // to swap out in POR layer, controlling deletion algorithm
+    ci_list           **not_accord[2];   // to swap out in POR layer, controlling deletion algorithm
     ci_list           **commute[2];
     bms_t              *visible;
     int                 visible_initialized;
@@ -77,94 +77,10 @@ struct lipton_ctx_s {
     size_t              avg_stack;
     size_t              avg_depth;
     size_t              states;
+
+    int                 init;
+    matrix_t            tc;     // group 2 group enablement
 };
-
-static int
-lipton_comm_static (lipton_ctx_t *lipton, int i, commute_e comm)
-{
-    if (SAFETY && bms_has(lipton->visible, comm, i)) {
-        Debugf ("LIPTON: visible %s group %d\n", comm_name[comm], i);
-        return false;
-    }
-    return lipton->commute[comm][i]->count == 0;
-}
-
-static bool
-lipton_comm_all_static (lipton_ctx_t *lipton, ci_list *list, commute_e comm)
-{
-    for (int *g = ci_begin(list); g != ci_end(list); g++)
-        if (!lipton_comm_static(lipton, *g, comm)) return false;
-    return true;
-}
-
-static bool
-lipton_calc_del (lipton_ctx_t *lipton, process_t *proc, int group, commute_e comm)
-{
-    por_context        *por = lipton->por;
-
-    por->not_left_accordsn = lipton->nla[comm];
-    del_por (lipton->del, false);
-    int                 c = 0;
-    Debugf ("LIPTON: DEL checking proc %d group %d (%s)", proc->id, group, comm==COMMUTE_LEFT?"left":"right");
-    if (debug) {
-        Debugf (" enabled { ");
-        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++)
-            Debugf ("%d, ", *g);
-        Debugf ("}\n");
-    }
-    Debugf ("LIPTON: DEL found: ");
-    for (int *g = ci_begin(por->enabled_list); g != ci_end(por->enabled_list); g++) {
-        if (lipton->g2p[*g] != proc->id && del_is_stubborn(lipton->del, *g)) {
-            Debugf ("%d(%d), ", *g, lipton->g2p[*g]);
-            c += 1;
-        }
-    }
-    Debugf (" %s\n-----------------\n", c == 0 ? "REDUCED" : "");
-
-    return c == 0;
-    (void) group;
-}
-
-/**
- * Calls the deletion algorithm to figure out whether a dependent action is
- * reachable. Dependent is left-dependent in the post-phase and right-dependent
- * in the pre-phase. However, because we check the pre-phase only after the
- * fact (after the execution of the action), we cannot use the algorithm in
- * the normal way. Instead, for the right-depenency check, we fix the
- * dependents directly in the deletion algorithm (instead of the action itself).
- * For left-commutativity, we need to check that all enabled actions commute in
- * non-stubborn futures. Therefore, we fix all enabled actions of the process in
- * that case.
- * The inclusion takes care that the algorithm does not attempt to delete
- * the process' enabled actions.
- */
-static bool
-lipton_comm_del (lipton_ctx_t *lipton, process_t *proc, int group,
-                 int *src, commute_e comm)
-{
-    ci_list            *list;
-    if (comm == COMMUTE_RGHT) {
-        if (lipton_comm_static(lipton, group, comm)) return true;
-        if (SAFETY && bms_has(lipton->visible, comm, group)) return false;
-        list = lipton->por->not_left_accordsn[group];
-    } else {
-        if (lipton_comm_all_static(lipton, proc->en, comm)) return true;
-        for (int *g = ci_begin (proc->en); SAFETY && g != ci_end (proc->en); g++) {
-            if (bms_has(lipton->visible, comm, *g)) return false;
-        }
-        list = proc->en;
-    }
-
-    por_context        *por = lipton->por;
-    por_init_transitions (por->parent, por, src);
-    bms_clear_all (por->fix);
-    bms_clear_all (por->include);
-    for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++)
-        bms_push (por->include, 0, *g);
-    for (int *g = ci_begin(list); g != ci_end(list); g++)
-        bms_push (por->fix, 0, *g);
-    return lipton_calc_del (lipton, proc, group, comm);
-}
 
 static inline void
 lipton_init_visibles (lipton_ctx_t* lipton, int* src)
@@ -195,6 +111,106 @@ lipton_init_visibles (lipton_ctx_t* lipton, int* src)
     bms_clear_all (por->visible_labels);
 }
 
+static int
+lipton_comm_static (lipton_ctx_t *lipton, int i, commute_e comm)
+{
+    if (SAFETY && bms_has(lipton->visible, comm, i)) {
+        Debugf ("LIPTON: visible %s group %d\n", comm_name[comm], i);
+        return false;
+    }
+    return lipton->commute[comm][i]->count == 0;
+}
+
+static bool
+lipton_comm_all_static (lipton_ctx_t *lipton, ci_list *list, commute_e comm)
+{
+    for (int *g = ci_begin(list); g != ci_end(list); g++)
+        if (!lipton_comm_static(lipton, *g, comm)) return false;
+    return true;
+}
+
+static inline bool
+all_inactive_covered (lipton_ctx_t *lipton, process_t *proc, process_t *in,
+                      int *src)
+{
+    por_context        *por = lipton->por;
+    if (proc->en_pc->count == 0) return true;
+
+    if (!lipton->init){ // fill guard status, request all guard values
+        lipton->init = 1;
+        GBgetStateLabelsGroup (por->parent, GB_SL_GUARDS, src, por->label_status);
+    }
+
+    // if there is a disabled, but active, group in the proc,
+    // then find disabled guard whose NES is included in the proc
+    for (int *d = ci_begin (proc->en_pc); d != ci_end (proc->en_pc); d++) {
+        for (int *ns = ci_begin (por->group_has[*d]); ns != ci_end (por->group_has[*d]); ns++) {
+            if ((*ns < por->nguards && (por->label_status[*ns] == 0))  ||
+                (*ns >= por->nguards && (por->label_status[*ns-por->nguards] != 0)) ) {
+                bool all = true;
+                for (int *g = ci_begin (por->ns[*ns]); all && g != ci_end (por->ns[*ns]); g++) {
+                    all &= lipton->g2p[*g] == in->id;
+                }
+                if (all) return true; // found NES included in proc
+            }
+        }
+    }
+    return false;
+}
+
+static inline bool
+lipton_check_future (lipton_ctx_t *lipton, process_t *proc, ci_list *conflict,
+                     int *src)
+{
+    char seen[lipton->num_procs];
+    for (int i = 0; i < lipton->num_procs; i++) seen[i] = -1;
+    for (int *g = ci_begin(conflict); g != ci_end(conflict); g++) {
+        int         o = lipton->g2p[*g];
+        if (o == proc->id) continue;
+        process_t  *other = &lipton->procs[o];
+        for (int *e = ci_begin(other->en); e != ci_end(other->en); e++) {
+            if (dm_is_set(&lipton->tc, *e, *g)) return false;
+        }
+        if (seen[o] == -1) seen[o] = all_inactive_covered(lipton, other, proc, src);
+        if (!seen[o]) {
+            for (int *d = ci_begin(other->en_pc); d != ci_end(other->en_pc); d++) {
+                if (dm_is_set(&lipton->tc, *d, *g)) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ */
+static bool
+lipton_comm_del (lipton_ctx_t *lipton, process_t *proc, int group,
+                 int *src, commute_e comm)
+{
+    por_context        *por = lipton->por;
+    ci_list            *list;
+    if (!all_inactive_covered(lipton, proc, proc, src)) {
+        return false;
+    }
+
+    if (comm == COMMUTE_RGHT) {
+        if (lipton_comm_static(lipton, group, comm)) return true;
+        if (SAFETY && bms_has(lipton->visible, comm, group)) return false;
+        return lipton_check_future(lipton, proc, lipton->not_accord[comm][group], src);
+    } else {
+        if (lipton_comm_all_static(lipton, proc->en, comm)) return true;
+        for (int *g = ci_begin (proc->en); SAFETY && g != ci_end (proc->en); g++) {
+            if (bms_has(lipton->visible, comm, *g)) return false;
+        }
+        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+            if (!lipton_check_future(lipton, proc, lipton->not_accord[comm][*g], src)) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
+
 static bool
 lipton_comm (lipton_ctx_t* lipton, process_t* proc, int group, int* src, commute_e comm)
 {
@@ -210,15 +226,21 @@ lipton_init_proc_enabled (lipton_ctx_t *lipton, int *src, process_t *proc,
                           int g_prev)
 {
     ci_clear (proc->en);
+    ci_clear (proc->en_pc);
     model_t             model = lipton->por->parent;
     ci_list            *cands = g_prev == GROUP_NONE ? proc->groups : lipton->g_next[g_prev];
     for (int *n = ci_begin(cands); n != ci_end(cands); n++) {
         guard_t            *gs = GBgetGuard (lipton->por->parent, *n);
         HREassert(gs != NULL, "GUARD RETURNED NULL %d", *n);
-        bool                enabled = true;
-        for (int j = 0; enabled && j < gs->count; j++)
-            enabled &= GBgetStateLabelLong (model, gs->guard[j], src) != 0;
+        int                 pc = lipton->g2pc[*n];
+        bool                enabled_pc = GBgetStateLabelLong (model, pc, src) != 0;
+        bool                enabled = enabled_pc;
+        for (int j = 0; enabled && j < gs->count; j++) {
+            if (gs->guard[j] == pc) continue;
+            enabled &= GBgetStateLabelLong (model, gs->guard[j], src) != 0;;
+        }
         ci_add_if (proc->en, *n, enabled);
+        ci_add_if (proc->en_pc, *n, !enabled && enabled_pc);
     }
     if (debug && g_prev != GROUP_NONE) {
         int                 count = 0;
@@ -276,6 +298,7 @@ lipton_gen_succs (lipton_ctx_t *lipton, stack_data_t *state)
     int                 phase = state->phase;
     int                *src = state->state;
     process_t          *proc = &lipton->procs[state->proc];
+    lipton->init = 0;
 
     if (CHECK_SEEN && lipton->depth != 0 && por_seen(src, group, true)) {
         lipton_emit_one (lipton, src, group);
@@ -404,8 +427,6 @@ lipton_create (por_context *por, model_t pormodel)
     lipton->queue[1] = dfs_stack_create (por->nslots + INT_SIZE(sizeof(stack_data_t)));
     lipton->commit   = dfs_stack_create (por->nslots + INT_SIZE(sizeof(stack_data_t)));
     lipton->por = por;
-    lipton->nla[COMMUTE_RGHT] = por->not_left_accords;   // Overwritten with better version to fix after-the-fact POR
-    lipton->nla[COMMUTE_LEFT] = por->not_left_accordsn;
     for (size_t i = 0; i < lipton->num_procs; i++) {
         //lipton->procs[i].fset = fset_create (sizeof(int[por->nslots]), 0, 4, 10);
     }
@@ -425,6 +446,8 @@ lipton_create (por_context *por, model_t pormodel)
     lipton->visible_initialized = 0;
     lipton->visible = bms_create (por->ngroups, COMMUTE_COUNT);
 
+    lipton->not_accord[COMMUTE_LEFT] = por->not_left_accords;
+    lipton->not_accord[COMMUTE_RGHT] = por->not_left_accordsn;
 
     matrix_t            tmp;
     dm_create (&tmp, por->ngroups, por->ngroups);
@@ -436,7 +459,8 @@ lipton_create (por_context *por, model_t pormodel)
             }
         }
     }
-    lipton->nla[COMMUTE_RGHT] = (ci_list **) dm_cols_to_idx_table (&tmp); // not need to remove local transitions
+    lipton->not_accord[COMMUTE_LEFT] = (ci_list **) dm_rows_to_idx_table (&tmp); // not need to remove local transitions
+    lipton->not_accord[COMMUTE_RGHT] = (ci_list **) dm_cols_to_idx_table (&tmp); // not need to remove local transitions
     dm_free (&tmp);
 
     matrix_t            nes;
@@ -444,18 +468,56 @@ lipton_create (por_context *por, model_t pormodel)
     for (int g = 0; g < por->ngroups; g++) {
         int             i = lipton->g2p[g];
         process_t      *p = &lipton->procs[i];
+        int             u1 = lipton->g2pc[g];
         for (int *h = ci_begin(p->groups); h != ci_end(p->groups); h++) {
-            if (guard_of(por, *h, &por->label_nes_matrix, g)) {
+            int             u2 = lipton->g2pc[*h];
+            if (dm_is_set(&por->label_nes_matrix, u2, g)) {
                 dm_set (&nes, g, *h);
             }
-        }
-        for (int *h = ci_begin(p->groups); h != ci_end(p->groups); h++) {
-            if (!dm_is_set(&por->nce, g, *h)) {
+            if (!dm_is_set(&por->gnce_matrix, u1, u2)) {
                 dm_set (&nes, g, *h); // self-enablement isn't captured in NES
             }
         }
     }
     lipton->g_next = (ci_list **) dm_rows_to_idx_table (&nes);
+
+    Printf1 (infoLong, "Group --> next:\n");
+    for (process_t *p = &lipton->procs[0]; p != &lipton->procs[lipton->num_procs]; p++) {
+        Printf1 (infoLong, "%3d:\n", p->id);
+        for (int *h = ci_begin(p->groups); h != ci_end(p->groups); h++) {
+            Printf1 (infoLong, "%3d->", *h);
+            for (int *g = ci_begin(lipton->g_next[*h]); g != ci_end(lipton->g_next[*h]); g++) {
+                Printf1 (infoLong, "%3d,", *g);
+            }
+            Printf1 (infoLong, "\n");
+        }
+        Printf1 (infoLong, "\n\n");
+    }
+
+
+    dm_create (&lipton->tc, por->ngroups, por->ngroups);
+    dm_copy (&nes, &lipton->tc);
+    dm_tc (&lipton->tc);
+
+    ci_list **tc = (ci_list **) dm_rows_to_idx_table (&lipton->tc);
+    Printf1 (infoLong, "Group --> tc:\n");
+    for (process_t *p = &lipton->procs[0]; p != &lipton->procs[lipton->num_procs]; p++) {
+        Printf1 (infoLong, "%3d:\n", p->id);
+        for (int *h = ci_begin(p->groups); h != ci_end(p->groups); h++) {
+            Printf1 (infoLong, "%3d->", *h);
+            for (int *g = ci_begin(tc[*h]); g != ci_end(tc[*h]); g++) {
+                Printf1 (infoLong, "%3d%s,", *g, lipton->g2p[*h] != lipton->g2p[*g] ? "*" : "");
+            }
+            Printf1 (infoLong, "\n");
+        }
+        Printf1 (infoLong, "\n\n");
+    }
+    RTfree(tc);
+
+    ci_list **test = (ci_list **) dm_rows_to_idx_table (&nes);
+    for (int i = 0; i < por->ngroups; i++)
+        HREassert (test[i]->count <= lipton->procs[lipton->g2p[i]].groups->count);
+    RTfree(test);
     dm_free (&nes);
 
     matrix_t            nds;
@@ -527,6 +589,7 @@ lipton_create (por_context *por, model_t pormodel)
     }
     dm_free (&p_left_dep);
     dm_free (&p_rght_dep);
+
     return lipton;
 }
 

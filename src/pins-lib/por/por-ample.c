@@ -440,6 +440,7 @@ identify_procs (por_context *por, size_t *num_procs, int *group2proc,
             procs[*num_procs].id = *num_procs;
             procs[*num_procs].groups = ci_create (por->ngroups);
             procs[*num_procs].en = ci_create (por->ngroups);
+            procs[*num_procs].en_pc = ci_create (por->ngroups);
             procs[*num_procs].succs = ci_create (por->ngroups);
             (*num_procs)++;
         }
@@ -591,6 +592,7 @@ find_procs (ample_t* ample)
             process_t* proc = &ample->procs[ample->num_procs];
             proc->groups = ci_create (ample->por->ngroups);
             proc->en = ci_create (ample->por->ngroups);
+            proc->en_pc = ci_create (ample->por->ngroups);
         }
     }
     for (int i = 0; i < ample->por->ngroups; i++) {
