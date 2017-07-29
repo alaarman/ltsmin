@@ -112,13 +112,13 @@ lipton_init_visibles (lipton_ctx_t* lipton, int* src)
 }
 
 static int
-lipton_comm_static (lipton_ctx_t *lipton, int i, commute_e comm)
+lipton_comm_static (lipton_ctx_t *lipton, int group, commute_e comm)
 {
-    if (SAFETY && bms_has(lipton->visible, comm, i)) {
-        Debugf ("LIPTON: visible %s group %d\n", comm_name[comm], i);
+    if (SAFETY && bms_has(lipton->visible, comm, group)) {
+        Debugf ("LIPTON: visible %s group %d\n", comm_name[comm], group);
         return false;
     }
-    return lipton->commute[comm][i]->count == 0;
+    return lipton->commute[comm][group]->count == 0;
 }
 
 static bool
