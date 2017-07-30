@@ -26,15 +26,15 @@ static int interactive_strategy_play_flag = 0;
 
 static int player = 0;
 
-static enum { DEFAULT, CHAIN, PAR, PAR2 } attr_strategy = DEFAULT;
+static enum { PG_DEFAULT, PG_CHAIN, PG_PAR, PG_PAR2 } attr_strategy = PG_DEFAULT;
 
 static char *attr_str = "default";
 static si_map_entry ATTR[] = {
-    {"default", DEFAULT},
-    {"chain",   CHAIN},
+    {"default", PG_DEFAULT},
+    {"chain",   PG_CHAIN},
 #ifdef HAVE_SYLVAN
-    {"par",     PAR},
-    {"par2",    PAR2},
+    {"par",     PG_PAR},
+    {"par2",    PG_PAR2},
 #endif
     {NULL, 0}
 };
@@ -93,16 +93,16 @@ spgsolver_options* spg_get_solver_options()
 {
     spgsolver_options* options = (spgsolver_options*)RTmalloc(sizeof(spgsolver_options));
     switch (attr_strategy) {
-    case CHAIN:
+    case PG_CHAIN:
         options->attr = spg_attractor_chaining;
         Print(infoLong, "attractor: chaining");
         break;
 #ifdef HAVE_SYLVAN
-    case PAR:
+    case PG_PAR:
         options->attr = spg_attractor_par;
         Print(infoLong, "attractor: par");
         break;
-    case PAR2:
+    case PG_PAR2:
         options->attr = spg_attractor_par2;
         Print(infoLong, "attractor: par2");
         break;
