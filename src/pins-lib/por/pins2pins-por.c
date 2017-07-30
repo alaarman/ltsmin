@@ -663,7 +663,7 @@ PORwrapper (model_t model)
                     if (i == j) continue;
 
                     // j must disable i (OK)
-                    if (!NO_MDS && all_guards(ctx, i, must_disable, j)) {
+                    if (!NO_MDS && guard_of(ctx, i, must_disable, j)) {
                         continue;
                     }
 
