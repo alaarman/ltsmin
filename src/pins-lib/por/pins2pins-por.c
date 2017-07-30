@@ -63,6 +63,8 @@ static si_map_entry por_algorithm[]={
     {"del",     POR_DEL},
     {"tr",      POR_LIPTON},
     {"str",     POR_LIPTON},
+    {"sstr",    POR_LIPTON},
+    {"hstr",    POR_LIPTON},
     {"str2",    POR_TR},
     {"ample",   POR_AMPLE},
     {"ample1",  POR_AMPLE1},
@@ -92,6 +94,10 @@ por_popt (poptContext con, enum poptCallbackReason reason,
                 PINS_POR = PINS_CORRECTNESS_CHECK ? PINS_POR_CHECK : PINS_POR_ON;
             if (strcmp(arg, "str") == 0)
                 USE_DEL = 1;
+            else if (strcmp(arg, "hstr") == 0)
+                USE_DEL = 2;
+            else if (strcmp(arg, "sstr") == 0)
+                USE_DEL = 3;
             if (PINS_POR_ALG == POR_LIPTON || PINS_POR_ALG == POR_TR)
                 POR_WEAK = 1;
             return;

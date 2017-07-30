@@ -155,7 +155,7 @@ explore_state (dlk_check_context_t *ctx, int *state, TransitionCB cb) {
     ctx->current = -1;
     ctx->seen_list->count = 0;
     ctx->src = state;
-    GBgetTransitionsAll(ctx->pctx->parent, state, cb, ctx);
+    GBgetTransitionsAll (ctx->pctx->parent, state, cb, ctx);
 }
 
 static void
@@ -165,7 +165,7 @@ print_diff (dlk_check_context_t *ctx, int *s1, int *s2)
     lts_type_t ltstype = GBgetLTStype (model);
     for (int i = 0; i < ctx->len; i++) {
         if (s1[i] != s2[i]) {
-            Printf (info, "%30s: %d <--> %d",
+            Printf (info, "%30s: %d --> %d",
                     lts_type_get_state_name(ltstype, i), s1[i], s2[i]);
             Printf (info, "\n");
         }
@@ -344,7 +344,7 @@ check_commute (dlk_check_context_t *ctx, int *dst)
             HREassert (diff == 0, "Stubborn trans %d/%d does not commute with NS trans: %d/%d "
                        "(count: %d, idx: %d, stubborn groups enabled: %d)"
                        ":\n\n%s\ndoes not commute with\n%s", s1[ctx->len],
-                       s1[ctx->len+1], s2[ctx->len], s1[ctx->len + 1],
+                       s1[ctx->len+1], s2[ctx->len], s2[ctx->len + 1],
                        scount, ns_i, ctx->ss_en_list->count,
                        str_group(ctx, s1[ctx->len]), str_group(ctx, s2[ctx->len]));
         }
