@@ -27,7 +27,7 @@ resize_matrix (matrix_t *m, int rows, int cols)
     return 1;
 }
 
-matrix_t
+static matrix_t
 read_matrix ()
 {
     matrix_t            m;
