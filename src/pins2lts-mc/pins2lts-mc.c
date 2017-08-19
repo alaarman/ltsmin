@@ -33,6 +33,7 @@
 
 #include <lts-io/user.h>
 #include <ltsmin-lib/ltsmin-standard.h>
+#include <mc-lib/lb.h>
 #include <pins-lib/pins.h>
 #include <pins-lib/pins-impl.h>
 #include <pins2lts-mc/parallel/global.h>
@@ -93,10 +94,11 @@ hre_init_and_spawn_workers (int argc, char *argv[])
     HRE_PROCS |= !SPEC_MT_SAFE;
     HRE_PROCS |= char_array_search (argv, argc, "--" FORCE_STRING);
 
+    size_t          num_workers = min (RTnumCPUs(), LB_MAX_THREADS);
     if (HRE_PROCS) {
-        HREenableFork (RTnumCPUs(), true);
+        HREenableFork (num_workers, true);
     } else {
-        HREenableThreads (RTnumCPUs(), true);
+        HREenableThreads (num_workers, true);
     }
 
     // spawns threads:

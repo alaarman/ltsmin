@@ -21,10 +21,10 @@
 
 typedef struct lb_s lb_t;
 
-typedef enum { lb_Static,   //Statically partition results of an initial run
-               lb_SRP,      //Synchronized random polling
-               lb_Combined, //start static switch to SRP when unbalanced
-               lb_None      //Non-interfering with the search algorithm
+typedef enum { LB_Static,   //Statically partition results of an initial run
+               LB_SRP,      //Synchronized random polling
+               LB_Combined, //start static switch to SRP when unbalanced
+               LB_None      //Non-interfering with the search algorithm
 } lb_method_t;
 
 typedef struct lb_inlined_s {
@@ -32,8 +32,8 @@ typedef struct lb_inlined_s {
     int                stopped;
 } lb_inlined_t;
 
-static const size_t lb_MAX_THREADS = (sizeof (uint64_t) * 8);
-static const size_t lb_MAX_HANDOFF_DEFAULT = 100;
+static const size_t LB_MAX_THREADS = (sizeof (uint64_t) * 8);
+static const size_t LB_MAX_HANDOFF_DEFAULT = 100;
 
 // return negative number when handoff is instead copied
 typedef ssize_t      (*lb_split_problem_f) (void *source, void *target,
@@ -82,7 +82,7 @@ extern int lb_stop (lb_t *lb);
  */
 extern void lb_reinit (lb_t *lb, size_t id);
 
-typedef enum { lb_BARRIER_MASTER, lb_BARRIER_SLAVE } lb_barrier_result_t;
+typedef enum { LB_BARRIER_MASTER, LB_BARRIER_SLAVE } lb_barrier_result_t;
 
 extern lb_barrier_result_t lb_barrier (lb_t *lb);
 

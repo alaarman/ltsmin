@@ -186,15 +186,15 @@ lb_internal (lb_t *lb, int id, size_t my_load, lb_split_problem_f split)
 lb_t                *
 lb_create (size_t threads, size_t gran)
 {
-    return lb_create_max (threads, gran, lb_MAX_HANDOFF_DEFAULT);
+    return lb_create_max (threads, gran, LB_MAX_HANDOFF_DEFAULT);
 }
 
 lb_t                *
 lb_create_max (size_t threads, size_t gran, size_t max)
 {
-    HREassert (threads <= lb_MAX_THREADS, "Only %zu threads allowed", lb_MAX_THREADS);
+    HREassert (threads <= LB_MAX_THREADS, "Only %zu threads allowed", LB_MAX_THREADS);
     lb_t               *lb = RTalign(CACHE_LINE_SIZE, sizeof(lb_t));
-    lb->local = RTalign(CACHE_LINE_SIZE, sizeof(lb_status_t[lb_MAX_THREADS]));
+    lb->local = RTalign(CACHE_LINE_SIZE, sizeof(lb_status_t[LB_MAX_THREADS]));
     size_t alloc_distance = (size_t)&lb->barrier_wait - (size_t)&lb->barrier_count;
     HREassert (alloc_distance == CACHE_LINE_SIZE, "Wrong alignment in allocation");
     for (size_t i = 0; i < threads; i++)
@@ -227,10 +227,10 @@ lb_barrier (lb_t *lb)
     if (W == count) {
         atomic_write (&lb->barrier_count, 0);
         atomic_write (&lb->barrier_wait, 1 - flip); // flip wait
-        return lb_BARRIER_MASTER;
+        return LB_BARRIER_MASTER;
     } else {
         while (flip == atomic_read(&lb->barrier_wait)) {}
-        return lb_BARRIER_SLAVE;
+        return LB_BARRIER_SLAVE;
     }
 }
 
