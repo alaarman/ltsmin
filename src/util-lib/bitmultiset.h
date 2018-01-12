@@ -31,14 +31,6 @@ bms_get (bms_t *bms, int set, int idx)
 }
 
 static inline void
-bms_clear (bms_t *bms, int set)
-{
-    bms->corrupt_stack = bms->lists[set]->count != 0;
-    bms->lists[set]->count = 0;
-}
-
-
-static inline void
 bms_debug_1 (bms_t *bms, int set)
 {
     ci_debug (bms->lists[set]);
@@ -77,6 +69,7 @@ bms_push_if (bms_t *bms, int set, int u, int condition)
 {
     bms->lists[set]->data[ bms->lists[set]->count ] = u;
     bms->lists[set]->count += condition != 0;
+    HREassert (bms->lists[set]->count < bms->elements);
 }
 
 static inline bool
@@ -96,6 +89,7 @@ bms_pop (bms_t *bms, int set)
     HREassert (bms_count(bms, set) != 0 && !(bms->corrupt_stack & set0),
                "Pop on %s set stack %d", bms->corrupt_stack & set0 ? "corrupt" : "empty", set);
     int v = bms->lists[set]->data[ --bms->lists[set]->count ];
+    HREassert (bms->lists[set]->count >= 0);
     bms->set[ v ] &= ~set0;
     return v;
 }
