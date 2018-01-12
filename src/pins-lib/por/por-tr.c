@@ -170,7 +170,7 @@ tr_calc_del (tr_ctx_t *tr, dyn_process_t *proc, comm_e comm)
     por_context        *por = tr->por;
 
     por->not_left_accordsn = tr->nla[comm];
-    del_por (tr->del, false);
+    del_por (tr->del, false, true);
     if (debug) {
         Debugf ("TR-%d DEL in-group %d (%s)", proc->id, tr->src->group == GROUP_NONE ? - 1 : tr->src->group, comm==COMMUTE_LEFT?"left, outgoing":"right, incoming");
         Debugf (" enabled { ");

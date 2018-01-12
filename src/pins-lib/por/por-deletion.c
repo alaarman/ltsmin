@@ -66,7 +66,7 @@ del_create (por_context *ctx)
 }
 
 static inline bool
-del_enabled (por_context* ctx, int u)
+del_enabled (por_context *ctx, int u)
 {
     return ctx->group_status[u] == GS_ENABLED;
 }
@@ -114,6 +114,7 @@ deletion_setup (del_ctx_t *delctx, bool reset)
     for (int i = 0; i < ctx->enabled_list->count; i++) {
         int group = ctx->enabled_list->data[i];
         bms_push_new (del, DEL_K, group);
+        Debug ("\tdekK = %d", group);
 
         bool v = is_visible (ctx, group);
         bms_push_if (del, DEL_V, group, v);
@@ -145,6 +146,7 @@ deletion_delete (del_ctx_t *delctx)
         for (int i = 0; i < ctx->not_accords[z]->count && bms_count(del, DEL_K) > 0; i++) {
             int x = ctx->not_accords[z]->data[i];
             if (bms_has(del,DEL_K,x)) {
+                Debug ("\tDNA^-1 x = %d", x);
                 if (!bms_has(del,DEL_N,x)) {
                     if (bms_has(del,DEL_R,x)) return true;
                     bms_push_new (del, DEL_Z, x);
@@ -223,7 +225,7 @@ deletion_delete (del_ctx_t *delctx)
 }
 
 static inline void
-deletion_analyze (del_ctx_t *delctx, ci_list *delete)
+deletion_analyze (del_ctx_t *delctx, ci_list *delete, bool all)
 {
     if (delete->count == 0) return;
     por_context        *ctx = delctx->por;
@@ -247,6 +249,12 @@ deletion_analyze (del_ctx_t *delctx, ci_list *delete)
 
         // Reverting deletions if necessary
         if (revert) {
+
+            if (all) {
+                del->set[v] = del->set[v] | (1<<DEL_N);
+                return;
+            }
+
             Debug ("Deletion rollback: |T'| = %d \t|K'| = %d \t|D'| = %d",
                      ci_count(delctx->Nprime), ci_count(delctx->Kprime), ci_count(delctx->Dprime));
             bms_push_new (del, DEL_R, v); // fail transition!
@@ -349,7 +357,7 @@ deletion_emit (del_ctx_t *delctx, int *src, TransitionCB cb, void *uctx)
                 del->set[x] |= 1 << DEL_R;
             }
             deletion_setup (delctx, false);
-            deletion_analyze (delctx, ctx->enabled_list);
+            deletion_analyze (delctx, ctx->enabled_list, false);
 
             emitted += deletion_emit_new (delctx, &provctx, src);
         }
@@ -359,7 +367,7 @@ deletion_emit (del_ctx_t *delctx, int *src, TransitionCB cb, void *uctx)
 }
 
 void
-del_por (del_ctx_t *delctx, bool prune_includes)
+del_por (del_ctx_t *delctx, bool prune_includes, bool all)
 {
     por_context        *ctx = delctx->por;
     bms_t              *del = delctx->del;
@@ -368,7 +376,7 @@ del_por (del_ctx_t *delctx, bool prune_includes)
         del->set[ bms_get(ctx->fix, 0, i) ] |= 1 << DEL_R; // retain
     }
     if (bms_count(ctx->exclude, 0) > 0) {
-        deletion_analyze (delctx, bms_list(ctx->exclude, 0));
+        deletion_analyze (delctx, bms_list(ctx->exclude, 0), all);
     }
     if (bms_count(ctx->include, 0) > 0) {
         ci_clear (delctx->tmp);
@@ -377,10 +385,10 @@ del_por (del_ctx_t *delctx, bool prune_includes)
                 ci_add (delctx->tmp, ctx->enabled_list->data[i]);
             }
         }
-        deletion_analyze (delctx, delctx->tmp);
-        if (prune_includes) deletion_analyze (delctx, bms_list(ctx->include, 0));
+        deletion_analyze (delctx, delctx->tmp, all);
+        if (prune_includes) deletion_analyze (delctx, bms_list(ctx->include, 0), all);
     } else {
-        deletion_analyze (delctx, ctx->enabled_list);
+        deletion_analyze (delctx, ctx->enabled_list, all);
     }
 }
 
@@ -390,7 +398,7 @@ del_por_all (model_t self, int *src, TransitionCB cb, void *user_context)
     por_context *ctx = ((por_context *) GBgetContext(self));
     del_ctx_t   *del = (del_ctx_t *) ctx->alg;
     por_init_transitions (self, ctx, src);
-    del_por (del, true);
+    del_por (del, true, false);
     return deletion_emit (del, src, cb, user_context);
 }
 

@@ -65,6 +65,7 @@ static si_map_entry por_algorithm[]={
     {"str",     POR_LIPTON},
     {"sstr",    POR_LIPTON},
     {"hstr",    POR_LIPTON},
+    {"astr",    POR_LIPTON},
     {"str2",    POR_TR},
     {"ample",   POR_AMPLE},
     {"ample1",  POR_AMPLE1},
@@ -98,6 +99,8 @@ por_popt (poptContext con, enum poptCallbackReason reason,
                 USE_DEL = 2;
             else if (strcmp(arg, "sstr") == 0)
                 USE_DEL = 3;
+            else if (strcmp(arg, "astr") == 0)
+                USE_DEL = 4;
             if (PINS_POR_ALG == POR_LIPTON || PINS_POR_ALG == POR_TR)
                 POR_WEAK = 1;
             return;
@@ -361,8 +364,11 @@ PORwrapper (model_t model)
     ctx->parent = model;
 
     sl_group_t *guardLabels = GBgetStateLabelGroupInfo (model, GB_SL_GUARDS);
-    sl_group_t* sl_guards = GBgetStateLabelGroupInfo(model, GB_SL_ALL);
+    sl_group_t *sl_guards = GBgetStateLabelGroupInfo(model, GB_SL_ALL);
     ctx->nguards = guardLabels->count;
+    HREassert (guardLabels->count == 0 || (guardLabels->sl_idx[0] == 0 && guardLabels->sl_idx[ctx->nguards-1] == ctx->nguards - 1),
+               "Implementation assumes that the first continuous block of state labels if formed by all guard labels.");
+
     ctx->nlabels = pins_get_state_label_count(model);
     ctx->ngroups = pins_get_group_count(model);
     ctx->nslots = pins_get_state_variable_count (model);
@@ -885,7 +891,7 @@ por_is_stubborn (por_context *ctx, int group)
     case POR_DEL:       return del_is_stubborn ((del_ctx_t *)ctx->alg, group);
     case POR_LIPTON:    return lipton_is_stubborn (ctx, group);
     case POR_TR:        return tr_is_stubborn (ctx, group);
-    default: Abort ("Unknown POR algorithm: '%s'", key_search(por_algorithm, PINS_POR_ALG));
+    default: Abort ("Unknown POR algorithm: '%s'", key_search(por_algorithm, PINS_POR_ALG)); return false;
     }
 }
 

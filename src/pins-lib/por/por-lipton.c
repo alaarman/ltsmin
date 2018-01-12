@@ -26,6 +26,9 @@
  * LIPTON reduction
  */
 
+static int act_label;
+static int act_index;
+
 typedef enum {
     COMMUTE_RGHT = 0,
     COMMUTE_LEFT = 1,
@@ -40,7 +43,7 @@ typedef enum {
 } phase_e;
 
 #define PROC_BITS 10
-#define GROUP_BITS 21
+#define GROUP_BITS 20
 
 #define GROUP_NONE ((1LL<<GROUP_BITS) - 1)
 
@@ -48,6 +51,7 @@ typedef struct  __attribute__((packed)) stack_data_s {
     uint32_t            group : GROUP_BITS;
     uint32_t            proc  : PROC_BITS;
     phase_e             phase : 1;
+    phase_e             act   : 1;
     int                 state[];
 } stack_data_t;
 
@@ -197,15 +201,6 @@ add_queue (search_t *s, int group)
     }
     return true;
 }
-
-static inline bool
-add_queue_all (search_t *s, ci_list *C)
-{
-    for (int *h = ci_begin (C); h != ci_end (C); h++)
-        if (!add_queue(s, *h)) return false;
-    return true;
-}
-
 static inline bool
 add_nes (search_t *s, int d)
 {
@@ -280,17 +275,29 @@ lipton_comm_heur (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
         por->group_status[g] = enabled;
     }
 
+    ci_list **dna = lipton->not_accord[comm];
     if (comm == COMMUTE_RGHT) {
-        add_queue_all(s, lipton->not_accord[comm][group]);
-        if (s->v[group] == L_VIS) return false;
         s->v[group] = L_VIS;
+        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+            s->v[*g] = L_VIS;
+        }
+        for (int *h = ci_begin(dna[group]); h != ci_end(dna[group]); h++) {
+            if (s->v[*h] != L_VIS) {
+                s->v[*h] = L_VIS;
+                ci_add (s->q, *h);
+            }
+        }
     } else {
         for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
-            add_queue_all(s, lipton->not_accord[comm][*g]);
+            s->v[*g] = L_VIS;
         }
         for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
-            if (s->v[*g] == L_VIS) return false;
-            s->v[*g] = L_VIS;
+            for (int *h = ci_begin(dna[*g]); h != ci_end(dna[*g]); h++) {
+                if (s->v[*h] != L_VIS) {
+                    s->v[*h] = L_VIS;
+                    ci_add (s->q, *h);
+                }
+            }
         }
     }
 
@@ -310,7 +317,7 @@ lipton_calc_del (lipton_ctx_t *lipton, process_t *proc, int group, commute_e com
     por_context        *por = lipton->por;
 
     por->not_left_accordsn = lipton->not_accord[1 - comm];
-    del_por (lipton->del, false);
+    del_por (lipton->del, false, true);
     int                 c = 0;
     Debugf ("LIPTON: DEL checking proc %d group %d (%s)", proc->id, group, comm==COMMUTE_LEFT?"left":"right");
     if (debug) {
@@ -319,16 +326,43 @@ lipton_calc_del (lipton_ctx_t *lipton, process_t *proc, int group, commute_e com
             Debugf ("%d, ", *g);
         Debugf ("}\n");
     }
+
+
     Debugf ("LIPTON: DEL found: ");
     for (int *g = ci_begin(por->enabled_list); g != ci_end(por->enabled_list); g++) {
-        if (lipton->g2p[*g] != proc->id && del_is_stubborn(lipton->del, *g)) {
-            Debugf ("%d(%d), ", *g, lipton->g2p[*g]);
-            c += 1;
+        if (comm == COMMUTE_RGHT) {
+            if (*g != group && del_is_stubborn(lipton->del, *g)) {
+                return false;
+            }
+        } else {
+            if (lipton->g2p[*g] != proc->id && del_is_stubborn(lipton->del, *g)) {
+                return false;
+            }
         }
+//        if (lipton->g2p[*g] != proc->id && del_is_stubborn(lipton->del, *g)) {
+//            Debugf ("%d(%d), ", *g, lipton->g2p[*g]);
+//            c += 1;
+//        }
     }
     Debugf (" %s\n-----------------\n", c == 0 ? "REDUCED" : "");
 
-    return c == 0;
+    ci_list **dna = lipton->not_accord[comm];
+    if (comm == COMMUTE_RGHT) {
+        //HREassert (del_is_stubborn(lipton->del, group));
+        for (int *t = ci_begin(dna[group]); t != ci_end(dna[group]); t++) {
+            HREassert (del_is_stubborn(lipton->del, *t), "DEL %d (%d), but no dna %d (%d)", group, lipton->g2p[group], *t, lipton->g2p[*t]);
+        }
+    } else {
+        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+            HREassert (del_is_stubborn(lipton->del, *g));
+            for (int *t = ci_begin(dna[*g]); t != ci_end(dna[*g]); t++) {
+                HREassert (del_is_stubborn(lipton->del, *t), "DEL %d (%d), but no dna %d (%d)", *g, lipton->g2p[*g], *t, lipton->g2p[*t]);
+            }
+        }
+    }
+
+    return true;
+//    return c == 0;
     (void) group;
 }
 
@@ -349,24 +383,50 @@ static bool
 lipton_comm_del (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
                  commute_e comm)
 {
-    ci_list            *list;
-
-    if (comm == COMMUTE_RGHT) {
-        list = lipton->por->not_left_accordsn[group];
-    } else {
-        list = proc->en;
-    }
-
     por_context        *por = lipton->por;
     por_init_transitions (por->parent, por, src);
     bms_clear_all (por->fix);
     bms_clear_all (por->include);
-    for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++)
-        bms_push (por->include, 0, *g);
-    for (int *g = ci_begin(list); g != ci_end(list); g++)
-        bms_push (por->fix, 0, *g);
+    if (comm == COMMUTE_RGHT) {
+        ci_list **dna = lipton->not_accord[comm];
+        for (int *g = ci_begin(dna[group]); g != ci_end(dna[group]); g++) {
+            bms_push (por->fix, 0, *g);
+        }
+        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+            bms_push (por->include, 0, *g);
+        }
+    } else {
+        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+            bms_push (por->include, 0, *g);
+            bms_push (por->fix, 0, *g);
+        }
+    }
     return lipton_calc_del (lipton, proc, group, comm);
 }
+//static bool
+//lipton_comm_del (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
+//                 commute_e comm)
+//{
+//    por_context        *por = lipton->por;
+//    por_init_transitions (por->parent, por, src);
+//    bms_clear_all (por->fix);
+//    bms_clear_all (por->include);
+//    if (comm == COMMUTE_RGHT) {
+//        ci_list **dna = lipton->not_accord[comm];
+//        for (int *t = ci_begin(dna[group]); t != ci_end(dna[group]); t++) {
+//            bms_push (por->include, 0, *t);
+//        }
+//    } else {
+//        for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+//            bms_push (por->include, 0, *g);
+//        }
+//    }
+//    for (int *g = ci_begin(proc->en); g != ci_end(proc->en); g++) {
+//        bms_push (por->fix, 0, *g);
+//    }
+//    return lipton_calc_del (lipton, proc, group, comm);
+//}
+
 
 static bool
 lipton_comm_sat (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
@@ -430,66 +490,66 @@ typedef enum stubborn_sat_search {
 bool add_ns (lipton_ctx_t *lipton, int n, sss_e S);
 
 
-static inline void
-watch_add (lipton_ctx_t *lipton, int n, int i, int t)
-{
-    HREassert (lipton->watch[t]->count >= 0);
-    HREassert (lipton->watched[n] == -1);
-    watch_t w = WL(n, i);
-    ci_add (lipton->watch[t], *(int*)&w); // ony add active ns's
-    HREassert (lipton->por->ns[n]->data[i] == t);
-    lipton->watched[n] = t;
-}
-
-static inline watch_t * // return watch if no longer watched
-watch_move_next (lipton_ctx_t *lipton, int t)
-{
-    HREassert (lipton->watch[t]->count >= 0);
-    watch_t *w = (watch_t*) &lipton->watch[t]->data[ lipton->watch[t]->count-- ]; // remove watch (non-physically for restore)
-    if (lipton->watched[w->n] != t) return NULL; // inactive watch (moved)
-    lipton->watched[w->n] = -1;
-
-    ci_list *ns = lipton->por->ns[w->n];
-    int      t2;
-    for (; w->ns_index < ns->count; w->ns_index++) {
-        t2 = ns->data[w->ns_index];
-        if (bms_has(lipton->X, SSS_INC, t2)) break; //next watch
-    }
-    if (w->ns_index == ns->count) {
-        return w;
-    } else {
-        watch_add (lipton, w->n, w->ns_index, t2); // move watch
-        return NULL;
-    }
-}
-
-// restore watch list
-static inline void
-watch_restore (lipton_ctx_t *lipton, int x)
-{
-    if (x >= lipton->por->ngroups) return;
-    int t = x;
-
-    lipton->watch[t]->count = -lipton->watch[t]->count; //reenact watch list
-    HREassert (lipton->watch[t]->count >= 0);
-
-    int j = 0;
-    for (int i = 0; i < lipton->watch[t]->count; i++) {
-        watch_t *w = (watch_t *) &lipton->watch[t]->data[i]; // old watch w of t
-        int *current = &lipton->watched[w->n];      // current watch for w->n
-
-        if (*current == -1 || *current > t) { // if t is lower, restore t
-            if (i != j) lipton->watch[t]->data[j++] = *(int *) w;
-            if (*current != -1) {
-                HREassert (ci_count(lipton->watch[*current]) >= 0);
-                if (*current == ci_top(lipton->watch[*current])) {
-                    ci_pop(lipton->watch[*current]); // clean garbage if on top
-                }
-            }
-            *current = t;
-        }
-    }
-}
+//static inline void
+//watch_add (lipton_ctx_t *lipton, int n, int i, int t)
+//{
+//    HREassert (lipton->watch[t]->count >= 0);
+//    HREassert (lipton->watched[n] == -1);
+//    watch_t w = WL(n, i);
+//    ci_add (lipton->watch[t], *(int*)&w); // ony add active ns's
+//    HREassert (lipton->por->ns[n]->data[i] == t);
+//    lipton->watched[n] = t;
+//}
+//
+//static inline watch_t * // return watch if no longer watched
+//watch_move_next (lipton_ctx_t *lipton, int t)
+//{
+//    HREassert (lipton->watch[t]->count >= 0);
+//    watch_t *w = (watch_t*) &lipton->watch[t]->data[ lipton->watch[t]->count-- ]; // remove watch (non-physically for restore)
+//    if (lipton->watched[w->n] != t) return NULL; // inactive watch (moved)
+//    lipton->watched[w->n] = -1;
+//
+//    ci_list *ns = lipton->por->ns[w->n];
+//    int      t2;
+//    for (; w->ns_index < ns->count; w->ns_index++) {
+//        t2 = ns->data[w->ns_index];
+//        if (bms_has(lipton->X, SSS_INC, t2)) break; //next watch
+//    }
+//    if (w->ns_index == ns->count) {
+//        return w;
+//    } else {
+//        watch_add (lipton, w->n, w->ns_index, t2); // move watch
+//        return NULL;
+//    }
+//}
+//
+//// restore watch list
+//static inline void
+//watch_restore (lipton_ctx_t *lipton, int x)
+//{
+//    if (x >= lipton->por->ngroups) return;
+//    int t = x;
+//
+//    lipton->watch[t]->count = -lipton->watch[t]->count; //reenact watch list
+//    HREassert (lipton->watch[t]->count >= 0);
+//
+//    int j = 0;
+//    for (int i = 0; i < lipton->watch[t]->count; i++) {
+//        watch_t *w = (watch_t *) &lipton->watch[t]->data[i]; // old watch w of t
+//        int *current = &lipton->watched[w->n];      // current watch for w->n
+//
+//        if (*current == -1 || *current > t) { // if t is lower, restore t
+//            if (i != j) lipton->watch[t]->data[j++] = *(int *) w;
+//            if (*current != -1) {
+//                HREassert (ci_count(lipton->watch[*current]) >= 0);
+//                if (*current == ci_top(lipton->watch[*current])) {
+//                    ci_pop(lipton->watch[*current]); // clean garbage if on top
+//                }
+//            }
+//            *current = t;
+//        }
+//    }
+//}
 
 // Backward search, adding "free" transitions
 bool
@@ -499,22 +559,28 @@ add_t (lipton_ctx_t *lipton, int t, sss_e S)
     if (!bms_push_new(lipton->X, S, t)) return false;
 
     if(S == SSS_BAD) {
-//        for (int *n = ci_begin(por->group2ns[t]); n != ci_end(por->group2ns[t]); n++) {
-//            add_ns (lipton, *n, S);
-//        }
+        for (int *n = ci_begin(por->group2ns[t]); n != ci_end(por->group2ns[t]); n++) {
+            if ((*n < por->nguards && (por->label_status[*n] == 0))  ||
+                (*n >= por->nguards && (por->label_status[*n-por->nguards] != 0)) ) {
+                add_ns (lipton, *n, S);
+            }
+        }
 
     } else {
 
         for (int *n = ci_begin(por->group2ns[t]); n != ci_end(por->group2ns[t]); n++) {
-            int *t2;
-            for (t2 = ci_begin(por->ns[*n]); t2 != ci_end(por->ns[*n]); t2++) {
-                if (!bms_has(lipton->X, S, *t2)) break;
+            if ((*n < por->nguards && (por->label_status[*n] == 0))  ||
+                (*n >= por->nguards && (por->label_status[*n-por->nguards] != 0)) ) {
+                int *t2;
+                for (t2 = ci_begin(por->ns[*n]); t2 != ci_end(por->ns[*n]); t2++) {
+                    if (!bms_has(lipton->X, S, *t2)) break;
+                }
+                if (t2 == ci_end(por->ns[*n])) add_ns (lipton, *n, S);
             }
-            if (t2 == ci_end(por->ns[*n])) add_ns (lipton, *n, S);
         }
 
 
-//        // add ns's having this group for free, if entire ns is included:
+        // add ns's having this group for free, if entire ns is included:
 //        int nwatches = ci_count(lipton->watch[t]);
 //        while (ci_count(lipton->watch[t]) > 0) {
 //            watch_t *w = watch_move_next (lipton, t);
@@ -560,23 +626,27 @@ lipton_sat_rewind (lipton_ctx_t* lipton, int x)
 {
     int y;
     do {y = bms_pop (lipton->X, SSS_INC);
-        if (y >= lipton->por->ngroups) y -= lipton->por->ngroups;
-        //watch_restore (lipton, y);
+//        if (y >= lipton->por->ngroups) y -= lipton->por->ngroups;
+//        watch_restore (lipton, y);
+        Debug("Rewinding %d", y);
     } while (y != x);
 }
+extern bool lipton_sat_t (lipton_ctx_t *lipton, int t);
 
 // FORWARD search, adding necessary NSs
 static bool
 lipton_sat_n (lipton_ctx_t *lipton, int n)
 {
     por_context        *por = lipton->por;
+    HREassert (n < NS_SIZE(por));
     if (bms_has(lipton->X, SSS_BAD, n + por->ngroups)) return false;
     if (!add_ns(lipton, n, SSS_INC)) return true;
+    Debug("Search_n %d", n);
 
     // add ns
     for (int *t = ci_begin(por->ns[n]); t != ci_end(por->ns[n]); t++) {
-        if (!add_t(lipton, *t, SSS_INC)) {
-            lipton_sat_rewind (lipton, n);    // rewind SSS_INC
+        if (!lipton_sat_t(lipton, *t)) {
+            lipton_sat_rewind (lipton, n + lipton->por->ngroups);    // rewind SSS_INC
             return false;
         }
     }
@@ -584,16 +654,21 @@ lipton_sat_n (lipton_ctx_t *lipton, int n)
 }
 
 // FORWARD search, adding necessary transitions
-static bool
+bool
 lipton_sat_t (lipton_ctx_t *lipton, int t)
 {
     por_context        *por = lipton->por;
+    HREassert (t < por->ngroups);
 
     if (bms_has(lipton->X, SSS_BAD, t)) return false;
     if (!add_t(lipton, t, SSS_INC)) return true;
+    Debug("Search_t %d", t);
 
     for (int *n = ci_begin(por->group_has[t]); n != ci_end(por->group_has[t]); n++) {
-        if (lipton_sat_n(lipton, *n)) return true;
+        if ((*n < por->nguards && (por->label_status[*n] == 0))  ||
+            (*n >= por->nguards && (por->label_status[*n-por->nguards] != 0)) ) {
+            if (lipton_sat_n(lipton, *n)) return true;
+        }
     }
     lipton_sat_rewind (lipton, t);    // rewind SSS_INC
     return false;
@@ -607,24 +682,20 @@ lipton_comm_all (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
 
     // init
     bms_clear_all (lipton->X);
-    lipton->watched = RTmallocZero (sizeof(int[NS_SIZE(por)]));
     memset(por->group_status, 0, por->ngroups);
     GBgetStateLabelsGroup (por->parent, GB_SL_GUARDS, src, por->label_status);
-    for (int n = 0; n < NS_SIZE(lipton->por); n++) {
-        lipton->watched[n] = -1;
-
-        if (ci_end(por->ns[n]) == ci_begin(por->ns[n])) {
-            add_ns (lipton, n, SSS_INC); // free ns
-        }
-        //HREassert (ci_end(por->ns[n]) != ci_begin(por->ns[n]), "Empty NES?");
-        int t = *ci_begin(por->ns[n]);
-
-        if ((n < por->nguards && (por->label_status[n] == 0))  ||
-            (n >= por->nguards && (por->label_status[n-por->nguards] != 0)) ) {
-            watch_add (lipton, n, 0, t);
-        }
-
-    }
+//    for (int n = 0; n < NS_SIZE(por); n++) {
+//        lipton->watched[n] = -1;
+//        if (ci_end(por->ns[n]) == ci_begin(por->ns[n])) {
+//            add_ns (lipton, n, SSS_INC); // free ns
+//        }
+//        int t = *ci_begin(por->ns[n]);
+//
+//        if ((n < por->nguards && (por->label_status[n] == 0))  ||
+//            (n >= por->nguards && (por->label_status[n-por->nguards] != 0)) ) {
+//            watch_add (lipton, n, 0, t);
+//        }
+//    }
     for (int g = 0; g < por->nguards; g++)  {
         if (por->label_status[g]) {
             for (int *t = ci_begin (por->guard2group[g]); t != ci_end (por->guard2group[g]); t++) {
@@ -632,36 +703,33 @@ lipton_comm_all (lipton_ctx_t *lipton, int *src, process_t *proc, int group,
             }
         }
     }
-    ci_clear (por->enabled_list);
     for (int t = 0; t < por->ngroups; t++)  {
-        ci_clear (lipton->watch[t]);
+//        ci_clear (lipton->watch[t]);
         por->group_status[t] = por->group_status[t] == por->group2guard[t]->count;
         if (por->group_status[t] && lipton->g2p[t] != proc->id) {
-            ci_add (por->enabled_list, t);
+            add_t (lipton, t, SSS_BAD);
         }
     }
 
+    for (int *t = ci_begin(proc->en); t != ci_end(proc->en); t++) {
+        add_t (lipton, *t, SSS_INC);
+    }
+    ci_list **dna = lipton->not_accord[comm];
     if (comm == COMMUTE_RGHT) {
         add_t (lipton, group, SSS_INC);
-        for (int *t = ci_begin (lipton->not_accord[comm][group]); t != ci_end (lipton->not_accord[comm][group]); t++) {
-            if (bms_has(lipton->X, SSS_INC, *t)) return false;
-            bms_push (lipton->X, SSS_Q, *t); // queue
-        }
-    } else {
-        for (int *t = ci_begin(proc->en); t != ci_end(proc->en); t++) {
-            add_t (lipton, *t, SSS_INC);
-        }
-        for (int *e = ci_begin(proc->en); e != ci_end(proc->en); e++) {
-            for (int *t = ci_begin (lipton->not_accord[comm][*e]); t != ci_end (lipton->not_accord[comm][*e]); t++) {
-                if (bms_has(lipton->X, SSS_INC, *t)) return false;
-                bms_push (lipton->X, SSS_Q, *t); // queue
+        for (int *t = ci_begin(dna[group]); t != ci_end(dna[group]); t++) {
+            if (!bms_has(lipton->X, SSS_INC, *t))  {
+                if (!lipton_sat_t(lipton, *t)) return false;
             }
         }
-    }
-
-    while (bms_count(lipton->X, SSS_Q) > 0) {
-        int t = bms_pop (lipton->X, SSS_Q); // dequeue
-        if (!lipton_sat_t (lipton, t)) return false;
+    } else {
+        for (int *e = ci_begin(proc->en); e != ci_end(proc->en); e++) {
+            for (int *t = ci_begin(dna[*e]); t != ci_end(dna[*e]); t++) {
+                if (!bms_has(lipton->X, SSS_INC, *t))  {
+                    if (!lipton_sat_t(lipton, *t)) return false;
+                }
+            }
+        }
     }
 
     return true;
@@ -677,7 +745,7 @@ lipton_visited (lipton_ctx_t *lipton, int group)
     case 0:  return false;
     case 1:  return del_is_stubborn(lipton->del, group);
     case 2:  return s->v[group] == L_VIS;
-    case 3:  return false;
+    case 3:  return true;
     case 4:  return bms_has(lipton->X, SSS_INC, group);
     default: Abort ("Unimplemented: USE_DEL = %d", USE_DEL); return false;
     }
@@ -689,51 +757,44 @@ lipton_check (lipton_ctx_t *lipton, process_t *proc, commute_e comm,
 {
     por_context        *por = lipton->por;
     search_t           *s = lipton->s;
-    ci_clear (s->q);
-    char V[por->ngroups];
-    memset (V, 0, por->ngroups);
+
     if (comm == COMMUTE_RGHT) {
+        lipton_visited(lipton, group);
         for (int *g2 = ci_begin (lipton->not_accord[comm][group]);
                   g2 != ci_end (lipton->not_accord[comm][group]); g2++) {
-            ci_add (s->q, *g2);
-            V[*g2] = 1;
+            HREassert (*g2 == group || lipton_visited(lipton, *g2));
         }
-        HREassert (V[group] != 1);
-        V[group] = 1;
     } else {
         for (int *g = ci_begin (proc->en); g != ci_end (proc->en); g++) {
+            lipton_visited(lipton, *g);
             for (int *g2 = ci_begin (lipton->not_accord[comm][*g]);
                       g2 != ci_end (lipton->not_accord[comm][*g]); g2++) {
-                ci_add (s->q, *g2);
-                V[*g2] = 1;
+                HREassert (lipton->g2p[*g2] == proc->id ||
+                           lipton_visited(lipton, *g2));
             }
         }
-        for (int *g = ci_begin (proc->en); g != ci_end (proc->en); g++) {
-            HREassert (V[*g] != 1);
-            V[*g] = 1;
-        }
     }
-    while (ci_count(s->q)) {
-        int d = ci_pop (s->q);
-        //HREassert(!por->group_status[d] || d == group);
+    for (int i = 0; i< por->ngroups; i++) {
+        if (!lipton_visited(lipton, i)) continue;
+        if (comm == COMMUTE_RGHT) {
+            if (i == group) continue;
+        } else {
+            if (ci_binary_search(proc->en, i) != -1) continue;
+        }
+
         int *ns;
-        for (ns = ci_begin(por->group_has[d]);
-             ns != ci_end(por->group_has[d]); ns++) {
+        for (ns = ci_begin(por->group_has[i]);
+             ns != ci_end(por->group_has[i]); ns++) {
             if ((*ns < por->nguards && (por->label_status[*ns] == 0))||
                 (*ns >= por->nguards&& (por->label_status[*ns - por->nguards] != 0))) {
-                int* g;
+                int *g;
                 for (g = ci_begin(por->ns[*ns]); g != ci_end(por->ns[*ns]); g++) {
                     if (!lipton_visited(lipton,*g)) break;
                 }
                 if (g == ci_end(por->ns[*ns])) break;
             }
         }
-        HREassert(ns != ci_end(por->ns[*ns]), "no nes for %d", d);
-        for (int *g = ci_begin(por->ns[*ns]); g != ci_end(por->ns[*ns]);  g++) {
-            if (V[*g]) continue;
-            ci_add (s->q, *g);
-            V[*g] = 1;
-        }
+        HREassert(ns != ci_end(por->ns[*ns]), "no nes for %d", i);
     }
 }
 
@@ -760,7 +821,7 @@ lipton_comm2 (lipton_ctx_t *lipton, process_t *proc, int group,
     if (lipton_comm_static(lipton, proc, group, comm)) return true;
 
     bool b = lipton_comm3 (lipton, proc, group, src, comm);
-    if (b) lipton_check (lipton, proc, comm, group);
+    if (debug && b) lipton_check (lipton, proc, comm, group);
     return b;
 }
 
@@ -818,13 +879,16 @@ lipton_init_proc_enabled (lipton_ctx_t *lipton, int *src, process_t *proc,
                 enabled &= GBgetStateLabelLong (model, gs->guard[j], src) != 0;
             if (enabled) HREassert (*n == proc->en->data[count++]);
         }
-        HREassert (count == proc->en->count);
+        if (count != proc->en->count) {
+            ci_print(proc->en);
+        }
+        HREassert (count == proc->en->count, "Only %d found.", count);
     }
 }
 
 static inline stack_data_t *
-lipton_stack (lipton_ctx_t *lipton, dfs_stack_t q, int *dst, int proc,
-              phase_e phase, int group)
+lipton_stack (lipton_ctx_t *lipton, dfs_stack_t q, bool act,
+              int *dst, int proc, phase_e phase, int group)
 {
     HREassert (group == GROUP_NONE || group < lipton->por->ngroups);
     stack_data_t       *data = (stack_data_t*) dfs_stack_push (q, NULL);
@@ -832,6 +896,7 @@ lipton_stack (lipton_ctx_t *lipton, dfs_stack_t q, int *dst, int proc,
     data->group = group;
     data->proc = proc;
     data->phase = phase;
+    data->act = act;
     return data;
 }
 
@@ -842,17 +907,26 @@ lipton_cb (void *context, transition_info_t *ti, int *dst, int *cpy)
     lipton_ctx_t       *lipton = (lipton_ctx_t*) context;
     phase_e             phase = lipton->src->phase;
     int                 proc = lipton->src->proc;
-    lipton_stack (lipton, lipton->queue[1], dst, proc, phase, ti->group);
+    bool act = NULL != ti->labels && ti->labels[act_label] == act_index;
+
+    lipton_stack (lipton, lipton->queue[1], act, dst, proc, phase, ti->group);
     (void) cpy;
 }
 
 void
-lipton_emit_one (lipton_ctx_t *lipton, int *dst, int group)
+lipton_emit_one (lipton_ctx_t *lipton, stack_data_t *state, int group)
 {
     group = lipton->depth == 1 ? group : lipton->lipton_group;
     transition_info_t       ti = GB_TI (NULL, group);
     ti.por_proviso = 1; // force proviso true
-    lipton->ucb (lipton->uctx, &ti, dst, NULL);
+    if (state->act) {
+        int acts[act_label + 1];
+        ti.labels = acts;
+        acts[act_label] = act_index;
+        lipton->ucb (lipton->uctx, &ti, state->state, NULL);
+    } else {
+        lipton->ucb (lipton->uctx, &ti, state->state, NULL);
+    }
     lipton->emitted += 1;
 }
 
@@ -866,18 +940,14 @@ lipton_gen_succs (lipton_ctx_t *lipton, stack_data_t *state)
     process_t          *proc = &lipton->procs[state->proc];
 
     if (CHECK_SEEN && lipton->depth != 0 && por_seen(src, group, true)) {
-        lipton_emit_one (lipton, src, group);
+        lipton_emit_one (lipton, state, group);
         return false;
     }
 
-//    int                 seen = fset_find (proc->fset, NULL, src, NULL, true);
-//    HREassert (seen != FSET_FULL, "Table full");
-//    if (seen) return false;
     lipton_init_proc_enabled (lipton, src, proc, group);
 
     if (phase == POST_COMMIT || proc->en->count == 0) {  // avoid re-emition of external start state:
-        //if (proc->en->count == 0 || fset_find(proc->fset, NULL, state, NULL, true) ) {
-        if (lipton->depth != 0) lipton_emit_one (lipton, src, group);
+        if (lipton->depth != 0) lipton_emit_one (lipton, state, group);
         return false;
     }
 
@@ -887,18 +957,17 @@ lipton_gen_succs (lipton_ctx_t *lipton, stack_data_t *state)
     }
 
     if (proc->en->count == 0) {  // avoid re-emition of external start state:
-        if (lipton->depth != 0 && phase == POST_COMMIT) lipton_emit_one (lipton, src, group);
+        if (lipton->depth != 0 && phase == POST_COMMIT) lipton_emit_one (lipton, state, group);
         return false;
     }
 
     if (phase == POST_COMMIT && !lipton_comm(lipton, proc, group, src, COMMUTE_LEFT)) {
-        lipton_emit_one (lipton, src, group);
+        lipton_emit_one (lipton, state, group);
         return false;
     }
 
     lipton->src = state;
     for (int *g = ci_begin (proc->en); g != ci_end (proc->en); g++) {
-        ci_add (proc->succs, *g);
         GBgetTransitionsLong (por->parent, *g, src, lipton_cb, lipton);
     }
 
@@ -917,10 +986,12 @@ lipton_bfs (lipton_ctx_t *lipton) // RECURSIVE
         while ((s = dfs_stack_pop (lipton->queue[0]))) {
             stack_data_t *state = (stack_data_t *) s;
             process_t          *proc = &lipton->procs[state->proc];
-            if (fset_find(proc->fset, NULL, state->state, NULL, true)) {
+            int seen = fset_find (proc->fset, NULL, state->state, NULL, true);
+            HREassert (seen != FSET_FULL, "Table full");
+            if (seen) {
                 if (state->phase == POST_COMMIT) {
                     HREassert (state->group != GROUP_NONE);
-                    lipton_emit_one (lipton, state->state, state->group);
+                    lipton_emit_one (lipton, state, state->group);
                 }
             } else {
                 lipton_gen_succs (lipton, state);
@@ -937,13 +1008,12 @@ lipton_lipton (por_context *por, int *src)
                dfs_stack_size(lipton->queue[1]) == 0 &&
                dfs_stack_size(lipton->commit  ) == 0);
 
-    stack_data_t           *state = lipton_stack (lipton, lipton->queue[0], src,
+    stack_data_t           *state = lipton_stack (lipton, lipton->queue[0], false, src,
                                                   0, PRE__COMMIT, GROUP_NONE);
     lipton->depth = 0;
     for (size_t i = 0; i < lipton->nprocs; i++) {
         fset_clear (lipton->procs[i].fset);
         state->proc = i;
-        ci_clear (lipton->procs[i].succs);
         lipton_gen_succs (lipton, state);
     }
     dfs_stack_pop (lipton->queue[0]);
@@ -999,10 +1069,20 @@ lipton_ctx_t *
 lipton_create (por_context *por, model_t pormodel)
 {
     HREassert (POR_WEAK == 1)
-    HRE_ASSERT (GROUP_BITS + PROC_BITS + 1 == 32);
+    HRE_ASSERT (GROUP_BITS + PROC_BITS + 2 == 32);
     HREassert (por->ngroups < (1LL << GROUP_BITS) - 1, // minus GROUP_NONE
                "Lipton reduction does not support more than 2^%d-1 groups", GROUP_BITS);
     HREassert (PINS_LTL == PINS_LTL_AUTO, "LTL currently not supported in Lipton reduction.");
+
+
+    // table number of first edge label
+    Warning (info, "PASSING ON ONLY ACTION LABELS")
+    lts_type_t      ltstype = GBgetLTStype (por->parent);
+    act_label = lts_type_find_edge_label_prefix (ltstype, LTSMIN_EDGE_TYPE_ACTION_PREFIX);
+    HREassert (act_label != -1, "No edge label '%s...' for action detection", LTSMIN_EDGE_TYPE_ACTION_PREFIX);
+    int act_type = lts_type_get_edge_label_typeno (ltstype, act_label);
+    chunk c = chunk_str("assert");
+    act_index = pins_chunk_put  (por->parent, act_type, c);
 
     lipton_ctx_t *lipton = RTmalloc (sizeof(lipton_ctx_t));
     lipton->s = RTmalloc (sizeof(search_t));
@@ -1044,6 +1124,8 @@ lipton_create (por_context *por, model_t pormodel)
     for (int g = 0; g < por->ngroups; g++) {
         for (int h = 0; h < por->ngroups; h++) {
             if (lipton->g2p[g] == lipton->g2p[h]) continue;
+            HREassert (h < por->ngroups);
+            HREassert (g < por->ngroups);
             if (dm_is_set(por->nla, g, h)) {
                 dm_set (&tmp, g, h); // self-enablement isn't captured in NES
             }
@@ -1054,17 +1136,20 @@ lipton_create (por_context *por, model_t pormodel)
     dm_free (&tmp);
 
     matrix_t            nes;
+    matrix_t           *label_mce_matrix = GBgetGuardCoEnabledInfo(por->parent);
     dm_create (&nes, por->ngroups, por->ngroups);
     for (int g = 0; g < por->ngroups; g++) {
         int             i = lipton->g2p[g];
         process_t      *p = &lipton->procs[i];
         int             u1 = lipton->g2pc[g];
+        HREassert (u1 < por->nguards);
         for (int *h = ci_begin(p->groups); h != ci_end(p->groups); h++) {
             int             u2 = lipton->g2pc[*h];
+            HREassert (u2 < por->nguards);
             if (dm_is_set(&por->label_nes_matrix, u2, g)) {
                 dm_set (&nes, g, *h);
             }
-            if (!dm_is_set(&por->gnce_matrix, u1, u2)) {
+            if (dm_is_set(label_mce_matrix, u1, u2)) {
                 dm_set (&nes, g, *h); // self-enablement isn't captured in NES
             }
         }
@@ -1142,6 +1227,8 @@ lipton_create (por_context *por, model_t pormodel)
             process_t          *o = &lipton->procs[j];
             int                 d = 0;
             for (int *h = ci_begin(o->groups); d != 3 && h != ci_end(o->groups); h++) {
+                HREassert (*h < por->ngroups);
+                HREassert (g < por->ngroups);
                 if (dm_is_set(por->nla, g, *h)) {
                     dm_set (&p_left_dep, g, j); d |= 1;
                 }
@@ -1295,6 +1382,7 @@ lipton_create (por_context *por, model_t pormodel)
 
 
     // alloc        X  =  {groups,nes,nds} X {add,bad,Q}
+    lipton->watched = RTmallocZero (sizeof(int[NS_SIZE(por)]));
     lipton->X  = bms_create (por->ngroups + 2 * por->nguards, 3);
     lipton->watch = RTmallocZero (sizeof(ci_list *[por->ngroups]));
     for (int t = 0; t < por->ngroups; t++)  {
