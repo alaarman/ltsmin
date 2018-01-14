@@ -68,7 +68,7 @@ pins_add_edge_label_visible (model_t model, int edge, int label)
     HREassert (visibles != NULL, "pins_add_edge_label_visible: No (lower) PINS layer uses POR visibility.");
 
     lts_type_t      ltstype = GBgetLTStype (model);
-    int             typeno = lts_type_get_edge_label_typeno (ltstype, label);
+    int             typeno = lts_type_get_edge_label_typeno (ltstype, edge);
     chunk           c = pins_chunk_get (model, typeno, label);
     int             sl_size = pins_get_state_label_count (model);
     int             count = 0;
@@ -88,7 +88,7 @@ pins_add_edge_label_visible (model_t model, int edge, int label)
             visibles[groups_of_edge[i]] = 1;
         }
     } else {
-        chunk c = pins_chunk_get(model, lts_type_get_edge_label_typeno(GBgetLTStype(model), edge), label);
+        chunk c = pins_chunk_get(model, typeno, label);
         char s[c.len * 2 + 6];
         chunk2string(c, sizeof(s), s);
         if (pins_allow_undefined_edges) {
