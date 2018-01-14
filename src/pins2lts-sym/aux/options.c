@@ -2,7 +2,9 @@
 
 #include <popt.h>
 
+#include <pins2lts-sym/alg/local.h>
 #include <pins2lts-sym/aux/options.h>
+#include <pins2lts-sym/maxsum/maxsum.h>
 
 
 #if !SPEC_MT_SAFE
@@ -247,6 +249,7 @@ struct poptOption options[] = {
     { "next-union", 0, POPT_ARG_NONE, &next_union, 0, "While computing successor states; unify simultaneously with current states", NULL },
     { "peak-nodes", 0, POPT_ARG_NONE, &peak_nodes, 0, "record peak nodes and report after reachability analysis", NULL },
     {NULL, 0, POPT_ARG_INCLUDE_TABLE, maxsum_options, 0, "Integer arithmetic options", NULL},
+    {NULL, 0, POPT_ARG_INCLUDE_TABLE, local_options, 0, "Local search options", NULL},
     POPT_TABLEEND
 };
 

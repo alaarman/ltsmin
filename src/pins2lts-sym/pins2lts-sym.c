@@ -128,7 +128,10 @@ init_model(char *file)
     nGrps = dm_nrows(GBgetDMInfo(model));
     max_sat_levels = (N / sat_granularity) + 1;
     if (PINS_USE_GUARDS) {
-        nGuards = GBgetStateLabelGroupInfo(model, GB_SL_GUARDS)->count;
+        sl_group_t *guards = GBgetStateLabelGroupInfo (model, GB_SL_GUARDS);
+        nGuards = guards->count;
+        HREassert (nGuards == 0 || (guards->sl_idx[0] == 0 && guards->sl_idx[nGuards-1] == nGuards - 1),
+                   "Implementation assumes that the first continuous block of state labels if formed by all guard labels.");
         if (HREme(HREglobal())==0) {
             Warning(info, "state vector length is %d; there are %d groups and %d guards", N, nGrps, nGuards);
         }
@@ -496,6 +499,26 @@ static void actual_main(void *arg)
 
     /* run reachability */
     run_reachability(visited, files[1]);
+
+    for (int i = 0; i < K; i++) {
+        vset_t a0 = vset_create (domain, -1, NULL);
+        vset_prev (a0, visited, group_next[i], visited);
+
+        // trick to get BDD with universe (pointer to 1)
+        int proj[1];
+        vset_t temp = vset_create (domain, 0, proj);
+        vset_project (temp, a0);
+        vset_t a1 = vset_create (domain, -1, NULL);
+        vset_project (a0, temp);
+
+        vset_minus (a1, a0);
+        // a0 X a1 is the cross-product
+
+
+        vdom_t domain = vdom_create_domain(2 * N, VSET_IMPL_AUTOSELECT);
+        //TODO: use
+    }
+
 
     if (sccs) detect_sccs (visited);
 

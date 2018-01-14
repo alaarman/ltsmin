@@ -19,6 +19,8 @@
  * --- Extraction POR relations (which can be overestimated)
  */
 
+extern struct poptOption local_options[];
+
 extern void run_local (vset_t I, vset_t V);
 
 #endif //ALG_LOCAL_H

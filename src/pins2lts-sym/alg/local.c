@@ -30,6 +30,13 @@
 #include <util-lib/dfs-stack.h>
 #include <util-lib/util.h>
 
+static int check_guards = 0;
+
+struct poptOption local_options[] = {
+    { "check-guards", 0, POPT_ARG_VAL, &check_guards, 1, "Check guards for absence of MAYBE's.", "" },
+    POPT_TABLEEND
+};
+
 
 /**
  * List of "writer groups"
@@ -40,11 +47,12 @@
 typedef struct write_group_s {
     int index;
     int num_readers;
+    ci_list    **guard_proj;
     struct reader_group_s {
         int         index; // reader
         ci_list    *slots;
         ci_list    *compl;
-        vset_t      tmp;
+        vset_t      w2r;
         vset_t      complement;
     } *readers;
     vset_t      complement;     // to create visited set
@@ -159,6 +167,19 @@ explore_cb (void *context, int *src)
     group_add_t         ctx;
     ctx.group = *(int *)context;
     ctx.src = src;
+
+    if (check_guards) {
+        ci_list *guards = (ci_list *) GBgetGuard (model, ctx.group);
+        for (int g = 0; g < ci_count(guards); g++) {
+            ci_list *guard_proj = writers[ctx.group].guard_proj[g];
+
+            int src_g[guard_proj->count];
+            for (int i = 0; i < guard_proj->count; i++)
+                src_g[i] = src[ci_get(guard_proj, i)];
+            int eval = GBgetStateLabelShort (model, ci_get(guards, g), src_g);
+            HREassert (eval != 2, "ns might be undefined for group %d (guard %d evaluates to MAYBE)", ctx.group, ci_get(guards, g));
+        }
+    }
     GBgetTransitionsShortR2W (model, ctx.group, src, group_add, &ctx);
     explored++;
 }
@@ -195,7 +216,7 @@ reach_local (vset_t V)
             write_group_t *wg = &writers[i];
             for (reader_t *r = r_bgn(wg); r <  r_end(wg); r++) {
                 int j = r->index;
-                if (r->tmp == NULL) { // writer's domain overlaps reader
+                if (r->w2r == NULL) { // writer's domain overlaps reader
                     vset_project (X_r[j], Q_w[i]);
                     vset_minus   (X_r[j], V_r[j]);
                     long n1;
@@ -208,11 +229,11 @@ reach_local (vset_t V)
                 } else {
                     long n1;// n2, n3, n4;
                     long double e1;// e2, e3, e4;
-                    vset_project        (r->tmp,        Q_w[i]);
-                    vset_count_fn (r->tmp, &n1, &e1);
+                    vset_project        (r->w2r,        Q_w[i]);
+                    vset_count_fn (r->w2r, &n1, &e1);
                     if (e1 != 0) {
                         vset_project        (r->complement, V_r[j]);
-                        vset_join   (X_r[j], r->complement, r->tmp);
+                        vset_join   (X_r[j], r->complement, r->w2r);
 //                        vset_count_fn (r->tmp, &n1, &e1);
 //                        vset_count_fn (r->complement, &n2, &e2);
 //                        vset_count_fn (X_r[j], &n3, &e3);
@@ -227,7 +248,7 @@ reach_local (vset_t V)
                         vset_clear (X_r[j]);
                         vset_clear (r->complement);
                     }
-                    vset_clear (r->tmp);
+                    vset_clear (r->w2r);
                 }
             }
         }
@@ -240,6 +261,34 @@ reach_local (vset_t V)
     (void) V;
 }
 
+static void
+prepare_guards ()
+{
+    ci_list **guard_r = (ci_list **) dm_rows_to_idx_table (GBgetStateLabelInfo (model));
+
+    // translate guard reads to group read projections
+    for (int i = 0; i < nGrps; i++) {
+        // all groups i
+        write_group_t *wg = &writers[i];
+        ci_list *guards = (ci_list*) GBgetGuard (model, i);
+        wg->guard_proj = RTmalloc (sizeof(ci_list*[guards->count]));
+        for (int *g = ci_begin (guards); g < ci_end (guards); g++) {
+            // all g of i
+            ci_list* ppg = ci_create (guard_r[*g]->count);
+            wg->guard_proj[g - ci_begin (guards)] = ppg;
+            Warning (infoLong, "%d", g - ci_begin (guards));
+            for (int* s = ci_begin (guard_r[*g]); s < ci_end (guard_r[*g]); s++) {
+                // all g dep. slots s
+                int index = ci_binary_search (r_projs[i], *s);
+                HREassert(index != -1, "Guard %d not included in read projection of group %d.", *g, s);
+                ci_add (ppg, index);
+            }
+        }
+    }
+
+    RTfree (guard_r);
+}
+
 /**
  * For each group i, this function finds all groups j that read from i's
  * write support. The intersection of read and write support is used
@@ -249,22 +298,25 @@ reach_local (vset_t V)
  * (join is an intersection operation of sets with different projections, that
  *  can also be supported in MDDs).
  */
-void
+static void
 find_domain_intersections ()
 {
+    writers = RTmallocZero (sizeof(write_group_t[nGrps]));
+
+    if (check_guards) prepare_guards ();
+
     /* Collect write group to read group matrix */
     ci_list *(*group_w2r)[nGrps];
     group_w2r = RTmallocZero (sizeof(*group_w2r) * nGrps);
     //ci_list ***group_w2r = RTmallocZero (sizeof(ci_list *[nGrps*nGrps]) + sizeof(ci_list **[nGrps]));
-    writers = RTmallocZero (sizeof(write_group_t[nGrps]));
 
-    ci_list **rcols = (ci_list**) dm_cols_to_idx_table (read_matrix);
+    ci_list **r_cols = (ci_list**) dm_cols_to_idx_table (read_matrix);
     for (int i = 0; i < nGrps; i++) {
         //group_w2r[i] = (ci_list **) &group_w2r[nGrps + i * nGrps];
         // iterate writing slots s for group i
         for (int *s = ci_begin(w_projs[i]); s < ci_end(w_projs[i]); s++) {
             // iterate groups j reading from s
-            for (int *j = ci_begin(rcols[*s]); j < ci_end(rcols[*s]); j++) {
+            for (int *j = ci_begin(r_cols[*s]); j < ci_end(r_cols[*s]); j++) {
                 ci_list *wt = group_w2r[i][*j];
                 if (wt == NULL) {
                     writers[i].num_readers++;
@@ -291,7 +343,7 @@ find_domain_intersections ()
             HREassert (ci_count(r_projs[i]) + ci_count(compl) == N);
         }
     }
-    RTfree (rcols);
+    RTfree (r_cols);
 
     /* Collapse matrix into list ( write_group_t[nGrps] ) */
     for (int i = 0; i < nGrps; i++) {
@@ -316,35 +368,109 @@ find_domain_intersections ()
                 ci_add_if (r->compl, *s, ci_binary_search(slots, *s) == -1);
             HREassert(ci_count(r->compl) == compl_len);
             r->complement = vset_create (domain, compl_len, r->compl->data);
-            r->tmp = vset_create (domain, slots->count, slots->data);
+            r->w2r = vset_create (domain, slots->count, slots->data);
             //ci_free (slots);
         }
         HREassert (c == wg->num_readers);
     }
     RTfree (group_w2r);
 
-    Printf (infoLong, "\n");
+    Printf (debug, "\n");
     size_t total = 0;
     for (int j = 0; j < nGrps; j++) {
         for (write_group_t *wg = w_bgn(); wg <  w_end(); wg++) {
             for (reader_t *r = r_bgn(wg); r <  r_end(wg); r++) {
                 if (r->index != j) continue;
                 if (r->slots == NULL) continue;
-                Printf (infoLong, "%2d X %2d -->\t", wg->index, r->index);
+                Printf (debug, "%2d X %2d -->\t", wg->index, r->index);
                 for (int *s = ci_begin(r->slots); s < ci_end(r->slots); s++) {
-                    Printf (infoLong, "%2d,", *s);
+                    Printf (debug, "%2d,", *s);
                     total++;
                 }
-                Printf (infoLong, "  |  ");
+                Printf (debug, "  |  ");
                 for (int *s = ci_begin(r->compl); s < ci_end(r->compl); s++) {
-                    Printf (infoLong, "%2d,", *s);
+                    Printf (debug, "%2d,", *s);
                 }
-                Printf (infoLong, "\n");
+                Printf (debug, "\n");
             }
         }
-        Printf (infoLong, "\n");
+        Printf (debug, "\n");
     }
-    Printf (infoLong, "\nTotal: %zu\n", total);
+    Printf (debug, "\nTotal: %zu\n", total);
+}
+
+static void
+check_conflict (int i , int j)
+{
+    //    matrix_t *rw = GBgetDMInfo(model);
+    //    int support[nGrps];
+    //    int c = 0;
+    //    for (int x = 0; x < N; x++) {
+    //        support[c] = x;
+    //        c += dm_is_set(rw, i, x) || dm_is_set(rw, i, x);
+    //    }
+    //    vset_t *s = vset_create (domain, c, support);
+    //
+    matrix_t       *R = GBgetDMInfoRead(model);
+    bool            o = false;             // read support of i and j overlap
+    for (int *s = ci_begin(r_projs[i]); s < ci_end(r_projs[i]) && !o; s++) {
+        o |= dm_is_set (R, j, *s);
+    }
+
+
+    //    reader_t *r;
+    //    write_group_t *wg = &writers[i];
+    //    for (r = r_bgn(wg); r <  r_end(wg); r++) if (r->index == j) break;
+    //
+
+    //    vset_project ();
+
+    vrel_create ();
+
+    vset_
+
+    vrel_set_expand()
+
+    vset_copy (Q_r[i], V_r[i]);
+    if (o)
+        vset_intersect (Q_r[i], V_r[j]);
+    vset_next (Q_w[i], Q_r[i], group_next[i]); // i step
+
+    vset_copy (Q_r[j], V_r[j]);
+    vset_intersect (Q_r[j], Q_w[i]);
+    vset_next (Q_w[j], Q_r[j], group_next[j]); // j step
+
+
+    vset_copy (Q_r[j], V_r[j]);
+    if (o)
+        vset_intersect (Q_r[j], V_r[i]);
+    vset_next (V_w[j], Q_r[j], group_next[j]); // i step
+
+    vset_copy (Q_r[i], V_r[i]);
+    vset_intersect (Q_r[i], V_w[j]);
+    vset_next (V_w[i], Q_r[i], group_next[i]); // j step
+}
+
+static void
+check_commutativity ()
+{
+    matrix_t *RW = GBgetDMInfo(model);
+    matrix_t dna;
+    dm_create (&dna, nGrps, nGrps);
+    ci_list **r_cols = (ci_list**) dm_cols_to_idx_table (read_matrix);
+    for (int i = 0; i < nGrps; i++) {
+        for (int j = i + 1; j < nGrps; j++) {
+            for (int *s = ci_begin(w_projs[i]); s < ci_end(w_projs[i]); s++) {
+                if (dm_is_set(RW, j, *s)) {
+                    if (i == j || check_conflict(i, j)) {
+                        dm_set (&dna, i, j);
+                        dm_set (&dna, j, i);
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void
@@ -400,7 +526,7 @@ deinit_local ()
                 if (r->compl)       ci_free (r->compl);
                 if (r->slots)       ci_free (r->slots);
                 if (r->complement)  vset_destroy (r->complement);
-                if (r->tmp)         vset_destroy (r->tmp);
+                if (r->w2r)         vset_destroy (r->w2r);
             }
             RTfree (wg->readers);
             vset_destroy (wg->complement);
@@ -425,7 +551,7 @@ print_local (vset_t V, int level)
 void
 run_local (vset_t I, vset_t V)
 {
-    Warning (info, "Localized [0]");
+    Warning (info, "Initiating local component search");
 
     init_local (I);
 
