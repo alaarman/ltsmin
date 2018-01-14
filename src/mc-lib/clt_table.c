@@ -145,7 +145,7 @@ clt_find_or_put (const clt_dbs_t* dbs, uint64_t k, bool insert)
     clt_bucket_t        check, oldval, newval;
     uint32_t            rem = CLT_REM (k);
     uint64_t            idx = CLT_HASH (dbs,k) + dbs->b_space; // add breathing space
-	check = read_table (dbs, idx);
+re:	check = read_table (dbs, idx);
 	if (!check.occupied) {
 	    newval.rest = rem;
     	newval.occupied = newval.change = newval.virgin = 1; newval.locked = 0;
@@ -153,11 +153,11 @@ clt_find_or_put (const clt_dbs_t* dbs, uint64_t k, bool insert)
     	check.locked = 0;
     	oldval = cas_ret_table (dbs, idx, check, newval);
     	if (!oldval.occupied && !oldval.locked)	{
-    		return 0;
+    	    return 0;
     	} else if (!oldval.occupied && oldval.locked) {
     		// locked, start over
             nanosleep (&BO, NULL);
-    		return clt_find_or_put (dbs, k, insert);
+            goto re;
     	} // oldval.occupied -> normal insert
     }
     size_t          t_left = clt_find_left_from (dbs, idx);
@@ -167,13 +167,13 @@ clt_find_or_put (const clt_dbs_t* dbs, uint64_t k, bool insert)
 
     if (!clt_try_lock(dbs, t_left)) {
         nanosleep (&BO, NULL);
-        return clt_find_or_put (dbs, k, insert);
+	goto re;
     }
 
     if (!clt_try_lock(dbs, t_right)) {
         clt_unlock (dbs, t_left);
         nanosleep (&BO, NULL);
-        return clt_find_or_put (dbs, k, insert);
+	goto re;
     }
     /* Startof CS */
     /* =========== */
