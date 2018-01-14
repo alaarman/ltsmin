@@ -105,6 +105,8 @@ options_static_init      (model_t model, bool timed)
     }
 
     if (PINS_POR && (strategy[0] & Strat_Reach) && (inv_detect || act_detect)) {
+        if (PINS_POR_ALG == POR_LIPTON || PINS_POR_ALG == POR_TR)
+            proviso = Proviso_ForceNone;
         if (proviso == Proviso_None) {
             proviso = strategy[0] & Strat_DFS ? Proviso_Stack : Proviso_ClosedSet;
             Warning (info, "Forcing use of the an ignoring proviso (%s)", provisos[proviso].key);
